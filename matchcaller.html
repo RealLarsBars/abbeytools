@@ -643,6 +643,9 @@ function loadCSV(file) {
         if (!p.discordId && discordOverrides[p.tag.toLowerCase()])
           p.discordId = discordOverrides[p.tag.toLowerCase()];
         tagMap.set(p.tag.toLowerCase(), p);
+        // normalized: collapse multiple spaces around pipe e.g. 'NSB  |  KXT' -> 'nsb | kxt'
+        const normalized = p.tag.replace(/\s*\|\s*/g, ' | ').trim().toLowerCase();
+        if (normalized !== p.tag.toLowerCase()) tagMap.set(normalized, p);
         if (p.shortTag) tagMap.set(p.shortTag.toLowerCase(), p);
         const stripped = p.tag.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
         if (stripped) tagMap.set(stripped, p);
@@ -768,6 +771,9 @@ async function loadPhaseGroups() {
 function resolvePlayer(entrantName) {
   const lower = entrantName.toLowerCase().trim();
   if (tagMap.has(lower)) return tagMap.get(lower);
+  // normalize spaces around pipe: 'NSB  |  KXT' -> 'nsb | kxt'
+  const normalized = lower.replace(/\s*\|\s*/g, ' | ');
+  if (tagMap.has(normalized)) return tagMap.get(normalized);
   const stripped = entrantName.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
   if (stripped && tagMap.has(stripped)) return tagMap.get(stripped);
   return null;
