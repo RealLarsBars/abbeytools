@@ -1475,6 +1475,7 @@ function renderPlayerHub() {
           <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;">Called &middot; ${loc}</span>
           <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);">DQ: <span class="dq-timer-display" data-time="${callTime}">0:00</span></span>
         </div>
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);flex-shrink:0;">Players checked in:</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;">
           <button onclick="toggleHubCheckin('${set.id}','${a?.id}','${escA}')"
             style="border-radius:8px;border:2px solid ${brdA};background:${bgA};color:${clA};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden;transition:all 0.15s;">
