@@ -630,6 +630,11 @@ function renderCsvStatus() {
 
 function loadCSV(file) {
   if (!file) return;
+  const slugMatch = file.name.match(/^attendeeList_(.+?)_\d{4}-\d{2}-\d{2}_/);
+  if (slugMatch) {
+    document.getElementById('tournamentSlug').value = slugMatch[1];
+    localStorage.setItem('abbey_tournament_slug', slugMatch[1]);
+  }
   Papa.parse(file, {
     header: true, skipEmptyLines: true,
     complete(results) {
