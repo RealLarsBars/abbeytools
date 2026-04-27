@@ -705,7 +705,21 @@ async function browseEvents() {
     }
     const events = tournament.events || [];
     const currentId = localStorage.getItem('abbey_sgg_event');
-    picker.innerHTML = `<div class="event-picker"><div class="t-name">${tournament.name}</div>${events.map(e => `<div class="event-opt ${e.id == currentId ? 'selected' : ''}" onclick="selectEvent(${e.id},'${e.name.replace(/'/g,"\\'")}\'','${tournament.name.replace(/'/g,"\\'")}')">​<span>${e.name}</span><span class="eid">#${e.id}</span></div>`).join('')}</div>`;
+    // Store event data for click handler, avoid inline quoting issues
+    picker._tournamentName = tournament.name;
+    picker._events = events;
+    const currentIdStr = String(currentId || '');
+    picker.innerHTML = `<div class="event-picker">
+      <div class="t-name">${tournament.name}</div>
+      ${events.map(e => `<div class="event-opt ${String(e.id) === currentIdStr ? 'selected' : ''}" data-event-id="${e.id}">
+        <span>${e.name}</span><span class="eid">#${e.id}</span>
+      </div>`).join('')}
+    </div>`;
+    picker.onclick = function(ev) {
+      const opt = ev.target.closest('[data-event-id]');
+      if (!opt) return;
+      selectEvent(opt.dataset.eventId, picker._events.find(e => String(e.id) === opt.dataset.eventId)?.name || '', picker._tournamentName);
+    };
     picker.style.display = 'block'; btn.textContent = 'Browse ✕';
     showStatus('settingsStatus', `${events.length} events — select one`, true);
   } catch(e) {
