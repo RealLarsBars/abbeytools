@@ -961,6 +961,19 @@ function getStreamScore(set) {
   return Math.abs(sA - sB) + ((sA + sB) * 0.1);
 }
 
+function streamGrade(score) {
+  if (score >= 9999) return null;
+  if (score <= 3)  return { grade: 'A+', color: '#00e5a0' };
+  if (score <= 6)  return { grade: 'A',  color: '#00e5a0' };
+  if (score <= 10) return { grade: 'A-', color: '#4fd8a0' };
+  if (score <= 15) return { grade: 'B+', color: '#a0d070' };
+  if (score <= 22) return { grade: 'B',  color: '#d4c040' };
+  if (score <= 30) return { grade: 'B-', color: '#e09030' };
+  if (score <= 50) return { grade: 'C',  color: '#e06030' };
+  if (score <= 80) return { grade: 'D',  color: '#e04040' };
+  return { grade: 'F', color: '#ff4f6d' };
+}
+
 async function enforceAutoDQ(set) {
   if (completedSetIds.has(String(set.id))) return;
   const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
@@ -1018,12 +1031,11 @@ async function doPoll() {
       // Phase group filter
       const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
       const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
-      if (pgAllowed.length > 0) {
-        pending = pending.filter(s => pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed)));
-      }
-
-      // Strict phase lock
+      // Phase group filter + strict phase lock both disabled when bypass is on
       if (!bypassPhase) {
+        if (pgAllowed.length > 0) {
+          pending = pending.filter(s => pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed)));
+        }
         pending = pending.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestIncompletePhase);
       }
 
@@ -1079,7 +1091,7 @@ async function doPoll() {
           const mA = pA?.discordId ? `<@${pA.discordId}>` : nA, mB = pB?.discordId ? `<@${pB.discordId}>` : nB;
           const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
           await sendWebhook(`📢 ${mA} vs ${mB} — ${loc.label} *(${ps.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
-          logMatch(nA, nB, loc.label, 'auto', targetId);
+          logMatch(nA, nB, loc.label, 'auto', targetId, ps.slots[0]?.seed?.seedNum, ps.slots[1]?.seed?.seedNum);
           addPollLog(`⚡ Auto-assigned & Pinged: ${nA} vs ${nB} to ${loc.label}`, 'new');
         } catch(err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); }
       }
@@ -1124,7 +1136,7 @@ async function doPoll() {
         const loc = set.station?.number ? `Station ${set.station.number}` : set.stream?.streamName ? `🎥 ${set.stream.streamName}` : '';
         const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
         await sendWebhook(`📢 ${mA} vs ${mB} — ${loc||'NO STATION'} *(${set.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
-        logMatch(nA, nB, loc||'No Station', 'auto', set.id);
+        logMatch(nA, nB, loc||'No Station', 'auto', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum);
         addPollLog(`✓ Ext. Call Detected: ${nA} vs ${nB}${loc ? ' → '+loc : ' (no station)'}`, 'new');
         pingCount++;
       }
@@ -1424,7 +1436,7 @@ function renderPlayerHub() {
   currentIds.forEach(id => { if (!_hubSlotIds.includes(id)) _hubSlotIds.push(id); });
   _hubSlotIds = _hubSlotIds.filter(id => currentIds.includes(id));
 
-  const CARD_H = '200px';
+  const CARD_H = 'auto';
 
   const cards = _hubSlotIds.map(slotId => {
     const set = actionSets.find(s => String(s.id) === slotId);
@@ -1451,16 +1463,8 @@ function renderPlayerHub() {
           <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0;min-width:0;">
             <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Timer Expired &middot; ${loc}</span>
           </div>
-          <div style="text-align:center;font-size:1.1rem;font-weight:800;margin:auto 0;min-width:0;display:flex;flex-direction:column;gap:8px;">
-            <div style="display:flex;align-items:center;justify-content:center;gap:6px;width:100%;">
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex-shrink:1;">${nameA}</span>
-              <span style="color:var(--muted);font-weight:400;font-size:0.8rem;flex-shrink:0;">vs</span>
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex-shrink:1;">${nameB}</span>
-            </div>
-            <div style="font-size:0.78rem;color:var(--accent2);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%;">
-               ${(!ciA && !ciB) ? 'Neither checked in' : (!ciA ? `${nameA} missing` : `${nameB} missing`)}
-            </div>
-          </div>
+          <div style="font-size:1rem;font-weight:800;line-height:1.3;word-break:break-word;margin:auto 0;">${nameA} <span style="color:var(--muted);font-weight:400;">vs</span> ${nameB}</div>
+          <div style="font-size:0.78rem;color:var(--accent2);font-weight:700;word-break:break-word;">${(!ciA && !ciB) ? 'Neither checked in' : (!ciA ? `${nameA} missing` : `${nameB} missing`)}</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex-shrink:0;">
             <button onclick="requestHubDQ(this, '${set.id}')" class="hub-dq-btn">DQ?</button>
             <button onclick="markInProgressQuick('${set.id}')" style="background:transparent;border:2px solid var(--accent);color:var(--accent);padding:10px;border-radius:8px;font-family:'Space Mono',monospace;font-weight:bold;cursor:pointer;font-size:0.85rem;transition:0.1s;" onmouseover="this.style.background='var(--accent)';this.style.color='#000';" onmouseout="this.style.background='transparent';this.style.color='var(--accent)';">Start Set?</button>
@@ -1478,14 +1482,14 @@ function renderPlayerHub() {
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);flex-shrink:0;">Players checked in:</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;">
           <button onclick="toggleHubCheckin('${set.id}','${a?.id}','${escA}')"
-            style="border-radius:8px;border:2px solid ${brdA};background:${bgA};color:${clA};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden;transition:all 0.15s;">
+            style="border-radius:8px;border:2px solid ${brdA};background:${bgA};color:${clA};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;transition:all 0.15s;">
             <span style="font-size:1.6rem;line-height:1;">${ciA?'&#x2705;':'&#x2B1C;'}</span>
-            <span style="font-size:0.88rem;font-weight:${ciA?'600':'800'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;text-align:center;">${nameA}</span>
+            <span style="font-size:0.82rem;font-weight:${ciA?'600':'800'};word-break:break-word;max-width:100%;text-align:center;line-height:1.2;">${nameA}</span>
           </button>
           <button onclick="toggleHubCheckin('${set.id}','${b?.id}','${escB}')"
-            style="border-radius:8px;border:2px solid ${brdB};background:${bgB};color:${clB};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden;transition:all 0.15s;">
+            style="border-radius:8px;border:2px solid ${brdB};background:${bgB};color:${clB};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;transition:all 0.15s;">
             <span style="font-size:1.6rem;line-height:1;">${ciB?'&#x2705;':'&#x2B1C;'}</span>
-            <span style="font-size:0.88rem;font-weight:${ciB?'600':'800'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;text-align:center;">${nameB}</span>
+            <span style="font-size:0.82rem;font-weight:${ciB?'600':'800'};word-break:break-word;max-width:100%;text-align:center;line-height:1.2;">${nameB}</span>
           </button>
         </div>
       </div>`;
@@ -1514,8 +1518,9 @@ function renderPlayerHub() {
 // ─────────────────────────────────────────────────────────────
 // Session Log
 // ─────────────────────────────────────────────────────────────
-function logMatch(nameA, nameB, station, source, setId = null) {
-  matchLog.unshift({ p1:nameA, p2:nameB, station, source, setId, completed:false, time: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
+function logMatch(nameA, nameB, station, source, setId = null, seedA = null, seedB = null) {
+  const score = (seedA && seedB) ? Math.abs(seedA - seedB) + (seedA + seedB) * 0.1 : 9999;
+  matchLog.unshift({ p1:nameA, p2:nameB, station, source, setId, completed:false, score, time: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
   renderLog();
 }
 
@@ -1535,7 +1540,7 @@ function renderLog() {
     <div class="match-entry ${e.source==='auto'?'auto':''} ${e.completed?'done':''}">
       <div style="flex:1;min-width:0;">
         <div class="players">${e.p1} <span style="color:var(--muted)">vs</span> ${e.p2}</div>
-        <div class="meta">${e.time} · ${e.source==='auto'?'⚡ auto':'🖐 manual'}${e.completed?' · <span style="color:var(--accent)">✓ done</span>':''}</div>
+        <div class="meta">${e.time} · ${e.source==='auto'?'⚡ auto':'🖐 manual'}${(() => { const g = streamGrade(e.score); return g ? ` · <span style="color:${g.color};font-weight:700;">${g.grade}</span>` : ''; })()}${e.completed?' · <span style="color:var(--accent)">✓ done</span>':''}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
         <div class="stn">${e.station}</div>
