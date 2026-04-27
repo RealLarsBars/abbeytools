@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Abbey Match Caller</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Space+Mono:wght@400;700&display=swap');
+
+  :root {
+    --bg:      #0d0f12;
+    --surface: #151820;
+    --border:  #252b38;
+    --accent:  #00e5a0;
+    --accent2: #ff4f6d;
+    --blue:    #7289da;
+    --text:    #e2e8f0;
+    --muted:   #5a6580;
+    --called:  #1a2a22;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', sans-serif; min-height: 100vh;
+    padding: 24px 16px 64px; max-width: 1400px; margin: 0 auto;
+  }
+
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+  .logo { width: 44px; height: 44px; background: var(--accent); border-radius: 10px; display: grid; place-items: center; font-size: 22px; flex-shrink: 0; }
+  h1 { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.5px; }
+  h1 span { color: var(--accent); }
+  .subtitle { font-size: 0.75rem; color: var(--muted); font-family: 'Space Mono', monospace; margin-top: 2px; }
+
+  .setup-header { display: flex; justify-content: space-between; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-bottom: 14px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  .setup-header:hover { background: #1c212b; border-color: var(--muted); }
+  .setup-header h2 { font-size: 0.9rem; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 8px; color: var(--text); }
+
+  .top-dashboard { display: grid; gap: 14px; margin-bottom: 14px; }
+  @media (min-width: 900px) { .top-dashboard { grid-template-columns: 1fr 2fr; } }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; height: 100%; }
+  .card-title { font-size: 0.68rem; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .card-title::after { content:''; flex:1; height:1px; background:var(--border); }
+
+  .venue-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  .v-col { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .v-col h4 { font-size: 0.65rem; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; letter-spacing: 1px; }
+  .stn-pill { display: inline-block; padding: 3px 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 5px; font-family: 'Space Mono', monospace; font-size: 0.68rem; margin: 0 4px 4px 0; color: var(--accent); }
+  .v-match { font-size: 0.72rem; padding: 5px 0; border-bottom: 1px solid var(--border); line-height: 1.3; }
+  .v-match:last-child { border-bottom: none; }
+  .v-match .stn-num { color: var(--accent); font-weight: 700; font-family: 'Space Mono', monospace; margin-right: 4px; }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; flex-wrap: wrap; }
+  .tab { flex: 1; padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--muted); min-width: 120px; font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: all 0.15s; text-align: center; }
+  .tab.active { background: var(--accent); color: #0d0f12; border-color: var(--accent); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  label { font-size: 0.78rem; color: var(--muted); display: block; margin-bottom: 5px; }
+  input, select { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; color: var(--text); font-family: 'Space Mono', monospace; font-size: 0.82rem; outline: none; transition: border-color 0.15s; appearance: none; -webkit-appearance: none; }
+  input:focus, select:focus { border-color: var(--accent); }
+  input::placeholder { color: var(--muted); }
+  select option { background: var(--surface); }
+
+  .row { display: flex; gap: 10px; margin-bottom: 12px; }
+  .row > * { flex: 1; }
+  .row .btn-sm { flex: 0 0 auto; align-self: flex-end; }
+  .field { margin-bottom: 12px; }
+  .field:last-child { margin-bottom: 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .btn { display: block; width: 100%; padding: 12px; border-radius: 10px; border: none; cursor: pointer; font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 700; letter-spacing: 0.4px; transition: opacity 0.15s, transform 0.1s; }
+  .btn:active { transform: scale(0.98); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #0d0f12; }
+  .btn-primary:not(:disabled):hover { opacity: 0.88; }
+  .btn-danger { background: var(--accent2); color: #fff; }
+  .btn-danger:not(:disabled):hover { opacity: 0.88; }
+  .btn-sm { padding: 8px 14px; width: auto; font-size: 0.76rem; background: var(--border); color: var(--text); border-radius: 7px; border: none; cursor: pointer; font-family: 'Space Mono', monospace; transition: all 0.15s; }
+  .btn-sm:hover { background: #2e3548; }
+
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px; font-size: 0.7rem; font-family: 'Space Mono', monospace; }
+  .badge-ok { background: rgba(0,229,160,0.15); color: var(--accent); }
+  .badge-err { background: rgba(255,79,109,0.15); color: var(--accent2); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .upload-zone { border: 2px dashed var(--border); border-radius: 10px; padding: 24px; text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s; height: 100%; display: flex; flex-direction: column; justify-content: center; }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(0,229,160,0.04); }
+  .upload-zone input { display: none; }
+  .upload-text { font-size: 0.82rem; color: var(--muted); margin-top: 6px; }
+  .upload-text strong { color: var(--accent); }
+
+  .auto-bar { display: flex; align-items: center; justify-content: space-between; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; }
+  .auto-bar .info { font-size: 0.8rem; }
+  .auto-bar .info strong { color: var(--accent); }
+  .auto-bar .meta { font-family: 'Space Mono', monospace; font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
+
+  .match-log { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
+  .match-entry { background: var(--called); border: 1px solid #1f3d2c; border-radius: 8px; padding: 10px 13px; display: flex; justify-content: space-between; align-items: center; gap: 10px; animation: slideIn 0.2s ease; }
+  .match-entry.auto { border-color: rgba(114,137,218,0.4); background: #151c2a; }
+  .match-entry.done { opacity: 0.45; }
+
+  #manualSetList { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; margin-top: 16px; }
+
+  .set-card { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; animation: slideIn 0.15s ease; display: flex; flex-direction: column; }
+  .set-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; }
+  .set-round { font-size: 0.78rem; font-weight: 700; }
+  .set-station-badge { font-family: 'Space Mono', monospace; font-size: 0.68rem; color: var(--accent); background: rgba(0,229,160,0.1); padding: 3px 8px; border-radius: 5px; white-space: nowrap; }
+  .set-player-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .set-player-row:last-of-type { border-bottom: none; }
+  .checkin-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; cursor: pointer; transition: transform 0.1s; border: 2px solid transparent; }
+  .checkin-dot:hover { transform: scale(1.2); }
+  .checkin-dot.yes { background: var(--accent); box-shadow: 0 0 6px rgba(0,229,160,0.4); }
+  .checkin-dot.no { background: transparent; border-color: var(--muted); }
+  .set-player-name { flex: 1; font-size: 0.85rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .set-player-actions { display: flex; gap: 5px; flex-shrink: 0; }
+  .act-btn { padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); font-family: 'Space Mono', monospace; font-size: 0.68rem; cursor: pointer; transition: all 0.12s; white-space: nowrap; }
+  .act-btn:hover { background: var(--border); }
+  .act-btn.dq { border-color: var(--accent2); color: var(--accent2); }
+  .act-btn.dq:hover { background: rgba(255,79,109,0.1); }
+  
+  /* Inline confirm state for the standard UI buttons */
+  .act-btn.dq.confirming { background: var(--accent2); color: #fff; }
+
+  /* New explicit class for the Hub Fallback DQ button */
+  .hub-dq-btn {
+    background: transparent; border: 2px solid var(--accent2); color: var(--accent2);
+    padding: 10px; border-radius: 8px; font-family: 'Space Mono', monospace;
+    font-weight: bold; cursor: pointer; font-size: 0.85rem; transition: 0.1s;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .hub-dq-btn:hover { background: var(--accent2); color: #fff; }
+  .hub-dq-btn.confirming { background: var(--accent2); color: #fff; }
+
+  .set-footer { display: flex; gap: 8px; margin-top: auto; padding-top: 14px; align-items: center; }
+  .set-call-btn { flex: 1; padding: 10px; border-radius: 8px; border: none; background: var(--accent); color: #0d0f12; font-family: 'Inter', sans-serif; font-size: 0.82rem; font-weight: 700; cursor: pointer; transition: opacity 0.15s; }
+  .set-call-btn:hover { opacity: 0.88; }
+  .set-called-badge { font-family: 'Space Mono', monospace; font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; white-space: nowrap; }
+  .sets-empty { color: var(--muted); font-size: 0.88rem; text-align: center; padding: 24px 0; grid-column: 1 / -1; }
+
+  .hub-card { background: #11141a; border: 2px solid var(--border); border-radius: 8px; padding: 10px; }
+  .hub-title { font-size: 0.95rem; font-weight: 800; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .hub-subtitle { font-size: 0.7rem; color: var(--muted); margin-bottom: 8px; line-height: 1.2; }
+
+  .hub-score-modal { display: none; margin-top: 6px; background: #0d0f12; padding: 8px; border-radius: 6px; border: 1px solid var(--border); }
+  .hub-score-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+  .hub-score-input { flex: 1; font-size: 1.1rem; padding: 6px; text-align: center; font-weight: 800; border-radius: 4px; border: 1px solid var(--border); background: #151820; color: #fff; width: auto; }
+  .hub-submit-btn { width: 100%; padding: 7px; border-radius: 4px; border: none; background: var(--accent); color: #000; font-size: 0.82rem; font-weight: 800; cursor: pointer; }
+
+  @keyframes slideIn { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+  .match-entry .players { font-weight: 700; font-size: 0.88rem; }
+  .match-entry .meta { font-family: 'Space Mono', monospace; font-size: 0.68rem; color: var(--muted); }
+  .match-entry .stn { font-family: 'Space Mono', monospace; font-size: 0.82rem; color: var(--accent); white-space: nowrap; }
+  .empty-log { color: var(--muted); font-size: 0.82rem; text-align: center; padding: 16px 0; }
+
+  .poll-log { max-height: 120px; overflow-y: auto; font-family: 'Space Mono', monospace; font-size: 0.7rem; color: var(--muted); }
+  .poll-log .entry { padding: 3px 0; border-bottom: 1px solid var(--border); }
+  .poll-log .entry.new { color: var(--accent); }
+  .poll-log .entry.err { color: var(--accent2); }
+
+  #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: var(--accent); color: #0d0f12; padding: 10px 20px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; transition: transform 0.25s cubic-bezier(0.34,1.56,0.64,1); pointer-events: none; z-index: 99; white-space: nowrap; }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast.err { background: var(--accent2); color: #fff; }
+
+  .event-picker { background: var(--bg); border: 1px solid var(--accent); border-radius: 10px; margin-top: 8px; overflow: hidden; }
+  .event-picker .t-name { padding: 9px 12px 6px; font-size: 0.72rem; color: var(--muted); font-family: 'Space Mono', monospace; letter-spacing: 0.5px; }
+  .event-picker .event-opt { padding: 8px 12px 8px 20px; cursor: pointer; font-size: 0.82rem; display: flex; justify-content: space-between; align-items: center; transition: background 0.1s; border-top: 1px solid var(--border); }
+  .event-picker .event-opt:hover { background: rgba(0,229,160,0.08); }
+  .event-picker .event-opt .eid { font-family:'Space Mono',monospace; font-size:0.68rem; color:var(--muted); }
+  .event-picker .event-opt.selected { background: rgba(0,229,160,0.12); }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .hint { font-size: 0.72rem; color: var(--muted); margin-top: 5px; font-family: 'Space Mono', monospace; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+  .toggle-label { font-size: 0.82rem; }
+  .toggle { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: var(--border); border-radius: 24px; cursor: pointer; transition: background 0.2s; }
+  .slider::before { content:''; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; background: var(--muted); border-radius: 50%; transition: transform 0.2s, background 0.2s; }
+  input:checked + .slider { background: rgba(0,229,160,0.25); }
+  input:checked + .slider::before { transform: translateX(20px); background: var(--accent); }
+  .section-sep { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+  .dq-timer-display { font-weight: bold; font-family: 'Space Mono', monospace; }
+  .score-btn {
+    padding: 12px 6px; border-radius: 8px; border: 2px solid var(--border);
+    background: var(--bg); color: var(--text); font-family: 'Space Mono', monospace;
+    font-size: 1.1rem; font-weight: 700; cursor: pointer; transition: all 0.1s; width: 100%;
+  }
+  .score-btn:hover { border-color: var(--muted); background: var(--surface); }
+  .score-btn.selected { border-color: var(--accent); background: rgba(0,229,160,0.2); color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">&#x1F3AE;</div>
+  <div>
+    <h1>Abbey <span>Match Caller</span></h1>
+    <div class="subtitle">sfmelee.com &middot; station assignment tool</div>
+  </div>
+</header>
+
+<div class="setup-header" onclick="toggleSetup()">
+  <h2>&#x2699;&#xFE0F; Setup &amp; Configuration</h2>
+  <span id="setupToggleIcon" style="font-size:0.8rem;color:var(--muted);">&#x25B2;</span>
+</div>
+
+<div class="top-dashboard" id="setupContent">
+  <div class="card" style="display:flex;flex-direction:column;">
+    <div class="card-title">Attendee List</div>
+    <div class="upload-zone" id="dropZone" onclick="document.getElementById('csvFile').click()">
+      <input type="file" id="csvFile" accept=".csv" onchange="loadCSV(this.files[0])">
+      <div style="font-size:2.2rem">&#x1F4CB;</div>
+      <div class="upload-text">Click or drag &middot; <strong>attendee CSV</strong> from start.gg</div>
+    </div>
+    <div id="csvStatus" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Settings</div>
+    <div class="field">
+      <label>Discord Webhook URL</label>
+      <div class="row">
+        <input type="text" id="webhookUrl" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" data-lpignore="true" data-form-type="other" style="-webkit-text-security:disc;">
+        <button class="btn-sm" onclick="saveSettings()">Save</button>
+      </div>
+    </div>
+    <hr class="section-sep">
+    <div class="field">
+      <label>start.gg API Token</label>
+      <input type="text" id="sggToken" placeholder="Bearer token from start.gg developer settings" autocomplete="off" spellcheck="false" data-lpignore="true" data-form-type="other" onblur="saveSettings()" style="-webkit-text-security:disc;">
+    </div>
+    <div class="field">
+      <label>Tournament Slug</label>
+      <div class="row" style="margin-bottom:0;">
+        <input type="text" id="tournamentSlug" placeholder="abbey" autocomplete="off" onblur="saveSettings()" style="font-family:'Space Mono',monospace;">
+        <button class="btn-sm" id="browseBtn" onclick="browseEvents()" style="white-space:nowrap;">Browse &#x25BE;</button>
+      </div>
+      <div class="hint">Short name or full slug — e.g. <code style="color:var(--accent)">abbey</code>. Full slug auto-fills and saves.</div>
+    </div>
+    <div class="field" id="selectedEventField" style="display:none;">
+      <label>Selected Event</label>
+      <div id="eventHint" style="font-size:0.82rem;color:var(--accent);font-family:'Space Mono',monospace;padding:6px 0;"></div>
+    </div>
+    <div id="eventPicker" style="display:none;"></div>
+    <input type="hidden" id="sggEvent">
+    <div id="settingsStatus" style="margin-top:10px;"></div>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('manual')">&#x1F4CB; Call Sets</button>
+  <button class="tab" onclick="switchTab('auto')">&#x26A1; Auto Watch</button>
+  <button class="tab" onclick="switchTab('hub')" style="background:#252b38;color:#fff;border-color:#252b38;">&#x1F4F1; Player Hub</button>
+</div>
+
+<div class="tab-panel active" id="tab-manual">
+  <div id="manualAutoBar" style="display:none;" class="auto-bar">
+    <div class="info">
+      <strong style="font-size:0.82rem;">&#x26A1; Auto watch running</strong>
+      <div class="meta">Auto-DQs and Discord Pings are active in the background.</div>
+    </div>
+    <span class="badge badge-ok"><span class="dot pulse"></span>live</span>
+  </div>
+  <div class="card">
+    <div class="card-title">TO Dashboard</div>
+    <div class="row" style="margin-bottom:0;">
+      <select id="setFetchState" style="flex:1;" onchange="renderManualSets()">
+        <option value="1">Pending (not started)</option>
+        <option value="6">Called (waiting for players)</option>
+        <option value="2">In Progress</option>
+        <option value="1,2,6" selected>All Active Sets</option>
+      </select>
+      <button class="btn-sm" id="fetchSetsBtn" onclick="fetchManualSets()" style="padding:10px 16px;">Fetch &#x2193;</button>
+    </div>
+    <div class="hint" style="margin-bottom:14px;margin-top:4px;">Tip: Tap the circles next to player names to manually check them in.</div>
+    <div id="manualSetList"></div>
+  </div>
+</div>
+
+<div class="tab-panel" id="tab-auto">
+  <div class="card" style="border:2px solid var(--accent);background:rgba(0,229,160,0.03);">
+    <div class="toggle-row">
+      <div style="flex:1;">
+        <span class="toggle-label" style="display:flex;align-items:center;gap:8px;font-size:1.1rem;color:var(--accent);">
+          &#x26A1; <strong>Auto-Call Pending Sets</strong>
+        </span>
+        <div class="hint" style="margin-top:6px;font-size:0.8rem;">
+          Strict Progression: only calls the earliest active phase. Streams go to competitive matches, stations to oldest waiting matches.
+        </div>
+      </div>
+      <label class="toggle" style="transform:scale(1.3);margin-right:10px;">
+        <input type="checkbox" id="autoAssignToggle" onchange="saveSettings()">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">Auto Watch Status</div>
+      <div class="auto-bar">
+        <div class="info">
+          <strong id="autoStatus">Idle</strong>
+          <div class="meta" id="autoMeta">Watches for sets called on any device. Handles Pings &amp; Auto-DQ.</div>
+        </div>
+        <span class="badge badge-ok" id="autoBadge" style="display:none;">
+          <span class="dot pulse"></span>
+          <span>polling</span>
+        </span>
+      </div>
+
+      <div class="row" style="margin-bottom:8px;">
+        <button class="btn btn-primary" id="startPollBtn" onclick="startPolling()">&#x25B6; Start Watching</button>
+        <button class="btn btn-danger" id="stopPollBtn" onclick="stopPolling()" disabled>&#x25A0; Stop</button>
+      </div>
+
+      <div id="activeFilterBar" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:0.78rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span style="color:var(--muted);font-family:'Space Mono',monospace;font-size:0.68rem;white-space:nowrap;">CALLING:</span>
+        <span id="activeFilterTags" style="color:var(--muted);font-size:0.75rem;">all phases (no filter)</span>
+      </div>
+
+      <div class="field">
+        <label>Poll Interval</label>
+        <select id="pollInterval">
+          <option value="15000" selected>Every 15 seconds</option>
+          <option value="20000">Every 20 seconds</option>
+          <option value="30000">Every 30 seconds</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Phase Group Filter <span style="color:var(--muted);font-size:0.7rem;">&#x2014; check pools to call &middot; leave all unchecked = call everything</span></label>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+          <button class="btn-sm" id="loadPhasesBtn" onclick="loadPhaseGroups()" style="white-space:nowrap;">&#x21BB; Load Phases</button>
+          <span id="pgLoadStatus" style="font-size:0.72rem;color:var(--muted);font-family:'Space Mono',monospace;"></span>
+        </div>
+        <div id="phaseGroupCheckboxes" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+
+      <hr class="section-sep">
+      
+      <div class="field">
+        <div class="toggle-row">
+          <span class="toggle-label" style="font-weight:600;">Enable Automatic DQs</span>
+          <label class="toggle">
+            <input type="checkbox" id="autoDqToggle" onchange="saveSettings()" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="hint" style="margin-top:6px;">If disabled, expired sets show manual DQ/Start buttons in the Hub.</div>
+      </div>
+      
+      <div class="field" style="margin-top:12px;">
+        <label style="font-weight:600;">DQ Timer Duration (Minutes)</label>
+        <input type="number" id="dqTimerInput" step="0.5" min="1" value="5.5" onblur="saveSettings()" style="width:120px;">
+        <div class="hint" style="margin-top:6px;">Time before a called set triggers a DQ or prompts for action.</div>
+      </div>
+
+      <hr class="section-sep">
+      
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div class="card-title" style="margin-bottom:0;">Poll Log</div>
+        <button class="btn-sm" style="padding:4px 8px;font-size:0.65rem;" onclick="copyPollLog()">Copy Log</button>
+      </div>
+      <div class="poll-log" id="pollLog">
+        <div class="entry" style="color:var(--muted);text-align:center;padding:8px 0;">No activity yet</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Venue Status</div>
+      <div class="venue-grid" style="margin-top:0;">
+        <div class="v-col">
+          <h4>Playing / Called</h4>
+          <div id="vActiveList" style="font-size:0.75rem;color:var(--muted)">Run watcher to sync</div>
+        </div>
+        <div class="v-col">
+          <h4>Free Stations &amp; Streams</h4>
+          <div id="vFreeList" style="font-size:0.75rem;color:var(--muted)">-</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tab-panel" id="tab-hub">
+  <div class="row" style="margin-bottom:16px;">
+    <button class="btn-sm" style="flex:1;padding:12px;font-size:1rem;" onclick="fetchManualSets()">&#x21BB; Refresh Matches</button>
+  </div>
+  
+  <div class="card" style="padding: 12px 16px; margin-bottom: 16px; background: rgba(0,229,160,0.05); border-color: var(--accent);">
+    <div class="toggle-row">
+      <span class="toggle-label" style="font-weight: 600; color: var(--text);">
+        Enable If Pool 1 almost complete <span style="font-weight: normal; color: var(--muted); font-size: 0.75rem;">(Bypasses strict phase progression)</span>
+      </span>
+      <label class="toggle">
+        <input type="checkbox" id="bypassPhaseToggle" onchange="saveSettings()">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="hub-card" style="border-color:var(--accent);">
+    <div class="hub-title" style="color:var(--accent);">&#x1F3AE; Active Matches</div>
+    <div class="hub-subtitle">Check in by tapping your name. Once both check in, use Report Score to submit.</div>
+    <div id="hubActiveList"></div>
+  </div>
+  <div id="hubPendingList" style="display:none;"></div>
+
+  <div id="scoreOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:200;align-items:center;justify-content:center;">
+    <div style="background:var(--surface);border:2px solid var(--accent);border-radius:14px;padding:24px;min-width:340px;max-width:460px;width:92%;">
+      <div id="scoreOverlayTitle" style="font-size:1.05rem;font-weight:800;margin-bottom:3px;text-align:center;"></div>
+      <div id="scoreOverlayLoc" style="font-size:0.7rem;color:var(--accent);font-family:'Space Mono',monospace;text-align:center;margin-bottom:20px;"></div>
+      <div style="display:grid;grid-template-columns:1fr 40px 1fr;gap:8px;align-items:start;margin-bottom:20px;">
+        <div style="text-align:center;">
+          <div id="scoreOverlayNameA" style="font-size:0.85rem;font-weight:700;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+          <div id="scoreDisplayA" style="font-size:2.8rem;font-weight:800;font-family:'Space Mono',monospace;color:var(--accent);margin-bottom:12px;line-height:1;">—</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+            <button onclick="setScore('A',0)" class="score-btn" id="sbA0">0</button>
+            <button onclick="setScore('A',1)" class="score-btn" id="sbA1">1</button>
+            <button onclick="setScore('A',2)" class="score-btn" id="sbA2">2</button>
+            <button onclick="setScore('A',3)" class="score-btn" id="sbA3">3</button>
+          </div>
+        </div>
+        <div style="font-size:1.4rem;font-weight:800;color:var(--muted);text-align:center;padding-top:52px;">-</div>
+        <div style="text-align:center;">
+          <div id="scoreOverlayNameB" style="font-size:0.85rem;font-weight:700;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+          <div id="scoreDisplayB" style="font-size:2.8rem;font-weight:800;font-family:'Space Mono',monospace;color:var(--accent);margin-bottom:12px;line-height:1;">—</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+            <button onclick="setScore('B',0)" class="score-btn" id="sbB0">0</button>
+            <button onclick="setScore('B',1)" class="score-btn" id="sbB1">1</button>
+            <button onclick="setScore('B',2)" class="score-btn" id="sbB2">2</button>
+            <button onclick="setScore('B',3)" class="score-btn" id="sbB3">3</button>
+          </div>
+        </div>
+      </div>
+      <button id="scoreOverlayBtn" class="hub-submit-btn" style="font-size:1rem;padding:14px;opacity:0.4;pointer-events:none;" onclick="submitOverlayScore()">Select scores above</button>
+      <button onclick="closeScoreOverlay()" style="display:block;width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'Inter',sans-serif;cursor:pointer;font-size:0.85rem;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:14px;">
+  <div class="card-title">Session Log</div>
+  <div class="match-log" id="matchLog">
+    <div class="empty-log">No matches called yet.</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────
+let players = [], tagMap = new Map(), matchLog = [], pollTimer = null;
+let announcedSetIds = new Set(), completedSetIds = new Set(), pollLogEntries = [];
+let activeSetsData = [], pendingSetsData = [], allFetchedSets = [];
+let stationList = [], streamList = [];
+let hubCheckins = new Set();
+let recentlyAssignedLocs = new Map(); // Local lock for stations: loc.id -> timestamp
+let DQ_MINUTES = 5.5;
+
+// Stable slot ordering for hub cards — prevents layout shift
+let _hubSlotIds = [];
+
+try {
+  hubCheckins = new Set(JSON.parse(localStorage.getItem('abbey_checkins') || '[]'));
+} catch(e) { hubCheckins = new Set(); }
+
+function saveCheckins() {
+  localStorage.setItem('abbey_checkins', JSON.stringify([...hubCheckins]));
+}
+
+// ─────────────────────────────────────────────────────────────
+// Setup accordion
+// ─────────────────────────────────────────────────────────────
+function toggleSetup(forceCollapse = null) {
+  const content = document.getElementById('setupContent');
+  const icon = document.getElementById('setupToggleIcon');
+  const shouldCollapse = forceCollapse !== null ? forceCollapse : content.style.display !== 'none';
+  content.style.display = shouldCollapse ? 'none' : 'grid';
+  icon.textContent = shouldCollapse ? '▼' : '▲';
+}
+
+// ─────────────────────────────────────────────────────────────
+// DQ timer
+// ─────────────────────────────────────────────────────────────
+setInterval(() => {
+  const nowSec = Math.floor(Date.now() / 1000);
+  document.querySelectorAll('.dq-timer-display').forEach(el => {
+    const callTime = parseInt(el.dataset.time);
+    if (!callTime) return;
+    const remaining = Math.max(0, (DQ_MINUTES * 60) - (nowSec - callTime));
+    const m = Math.floor(remaining / 60), s = Math.floor(remaining % 60).toString().padStart(2,'0');
+    el.textContent = `${m}:${s}`;
+    if (remaining === 0) el.style.color = 'var(--accent2)';
+  });
+}, 1000);
+
+// ─────────────────────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────────────────────
+function saveSettings() {
+  localStorage.setItem('abbey_webhook', document.getElementById('webhookUrl').value.trim());
+  localStorage.setItem('abbey_sgg_token', document.getElementById('sggToken').value.trim());
+  const slug = document.getElementById('tournamentSlug').value.trim();
+  if (slug) localStorage.setItem('abbey_tournament_slug', slug);
+  const event = document.getElementById('sggEvent').value.trim();
+  if (event) localStorage.setItem('abbey_sgg_event', event);
+  localStorage.setItem('abbey_auto_assign', document.getElementById('autoAssignToggle')?.checked ? '1' : '0');
+  localStorage.setItem('abbey_bypass_phase', document.getElementById('bypassPhaseToggle')?.checked ? '1' : '0');
+  
+  const adqInput = document.getElementById('autoDqToggle');
+  if (adqInput) localStorage.setItem('abbey_auto_dq', adqInput.checked ? '1' : '0');
+  
+  const dqTimer = document.getElementById('dqTimerInput');
+  if (dqTimer) {
+    const dqVal = parseFloat(dqTimer.value) || 5.5;
+    localStorage.setItem('abbey_dq_timer', String(dqVal));
+    DQ_MINUTES = dqVal;
+  }
+
+  const pgChecked = [...document.querySelectorAll('#phaseGroupCheckboxes input[type=checkbox]:checked')].map(cb => cb.value);
+  localStorage.setItem('abbey_pg_filter', pgChecked.join(','));
+  updateFilterBar();
+  showStatus('settingsStatus', '✓ Settings saved', true);
+}
+
+function loadSettings() {
+  const get = k => localStorage.getItem(k) || '';
+  document.getElementById('webhookUrl').value = get('abbey_webhook');
+  document.getElementById('sggToken').value   = get('abbey_sgg_token');
+  document.getElementById('tournamentSlug').value = get('abbey_tournament_slug') || '';
+  document.getElementById('sggEvent').value        = get('abbey_sgg_event');
+  const at = document.getElementById('autoAssignToggle');
+  if (at) at.checked = get('abbey_auto_assign') === '1';
+  const bt = document.getElementById('bypassPhaseToggle');
+  if (bt) bt.checked = get('abbey_bypass_phase') === '1';
+  
+  const adq = document.getElementById('autoDqToggle');
+  if (adq) adq.checked = get('abbey_auto_dq') !== '0';
+  
+  const savedDq = get('abbey_dq_timer');
+  if (savedDq) {
+    const dqInput = document.getElementById('dqTimerInput');
+    if (dqInput) dqInput.value = savedDq;
+    DQ_MINUTES = parseFloat(savedDq) || 5.5;
+  }
+  
+  if (get('abbey_sgg_event')) {
+    document.getElementById('eventHint').textContent = `Event #${get('abbey_sgg_event')} loaded · Browse to change`;
+    document.getElementById('selectedEventField').style.display = 'block';
+    toggleSetup(true);
+    setTimeout(() => loadPhaseGroups(), 500);
+  }
+}
+
+function showStatus(id, msg, ok) {
+  document.getElementById(id).innerHTML = `<span class="badge ${ok?'badge-ok':'badge-err'}"><span class="dot"></span>${msg}</span>`;
+}
+
+function updateFilterBar() {
+  const bar = document.getElementById('activeFilterTags');
+  if (!bar) return;
+  const checked = [...document.querySelectorAll('#phaseGroupCheckboxes input[type=checkbox]:checked')];
+  if (!checked.length) { bar.innerHTML = '<span style="color:var(--muted);">all phases</span>'; return; }
+  bar.innerHTML = checked.map(cb => {
+    const label = cb.closest('label')?.textContent?.trim() || cb.value;
+    return `<span style="background:rgba(0,229,160,0.15);color:var(--accent);border:1px solid rgba(0,229,160,0.3);border-radius:4px;padding:2px 8px;font-family:'Space Mono',monospace;font-size:0.7rem;white-space:nowrap;">${label}</span>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────────────────────
+// Tabs
+// ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  const tabs = ['manual','auto','hub'];
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', tabs[i] === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
+  if (name === 'hub' || name === 'manual') fetchManualSets();
+}
+
+// ─────────────────────────────────────────────────────────────
+// CSV
+// ─────────────────────────────────────────────────────────────
+let discordOverrides = {};
+try { discordOverrides = JSON.parse(localStorage.getItem('abbey_discord_overrides') || '{}'); } catch(e) {}
+
+function saveOverrides() {
+  localStorage.setItem('abbey_discord_overrides', JSON.stringify(discordOverrides));
+}
+
+function manualLink(tag) {
+  const input = document.getElementById('ml-' + tag);
+  const id = input?.value.trim().replace(/\D/g, '');
+  if (!id) { toast('Paste a numeric Discord user ID', true); return; }
+  discordOverrides[tag.toLowerCase()] = id;
+  saveOverrides();
+  const p = tagMap.get(tag.toLowerCase());
+  if (p) p.discordId = id;
+  renderCsvStatus();
+  toast(`✓ Linked ${tag}`);
+}
+
+function renderCsvStatus() {
+  const missing = players.filter(p => !p.discordId);
+  const withDiscord = players.filter(p => p.discordId).length;
+  let html = `<span class="badge badge-ok"><span class="dot"></span>${players.length} players &middot; ${withDiscord} Discord-linked</span>`;
+  if (missing.length) {
+    html += `<div style="margin-top:8px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:7px;">`;
+    html += `<div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px;">No Discord linked (${missing.length})</div>`;
+    html += missing.map(p => `
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+        <span style="font-family:'Space Mono',monospace;font-size:0.75rem;color:var(--accent2);flex:0 0 auto;min-width:100px;overflow:hidden;text-overflow:ellipsis;">${p.tag}</span>
+        <input id="ml-${p.tag}" type="text" placeholder="Discord user ID" style="flex:1;font-size:0.72rem;padding:4px 7px;" autocomplete="off">
+        <button class="btn-sm" onclick="manualLink('${p.tag.replace(/'/g, "\\'")}')">Link</button>
+      </div>`).join('');
+    html += `</div>`;
+  }
+  document.getElementById('csvStatus').innerHTML = html;
+}
+
+function loadCSV(file) {
+  if (!file) return;
+  Papa.parse(file, {
+    header: true, skipEmptyLines: true,
+    complete(results) {
+      players = results.data.map(row => ({
+        tag: row['GamerTag']?.trim() || '',
+        shortTag: row['Short GamerTag']?.trim() || row['GamerTag']?.trim() || '',
+        discordId: row['Discord ID']?.trim() || '',
+      })).filter(p => p.tag);
+      tagMap.clear();
+      for (const p of players) {
+        if (!p.discordId && discordOverrides[p.tag.toLowerCase()])
+          p.discordId = discordOverrides[p.tag.toLowerCase()];
+        tagMap.set(p.tag.toLowerCase(), p);
+        if (p.shortTag) tagMap.set(p.shortTag.toLowerCase(), p);
+        const stripped = p.tag.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
+        if (stripped) tagMap.set(stripped, p);
+      }
+      renderCsvStatus();
+    }
+  });
+}
+
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) loadCSV(f); });
+
+// ─────────────────────────────────────────────────────────────
+// API
+// ─────────────────────────────────────────────────────────────
+async function sggQuery(query) {
+  const token = document.getElementById('sggToken').value.trim();
+  if (!token) throw new Error('Enter your start.gg API token first');
+  const res = await fetch('https://api.start.gg/gql/alpha', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ query })
+  });
+  const data = await res.json();
+  if (data.errors) throw new Error(data.errors.map(e => e.message).join('; '));
+  return data;
+}
+
+async function browseEvents() {
+  const picker = document.getElementById('eventPicker');
+  const btn = document.getElementById('browseBtn');
+  const input = document.getElementById('tournamentSlug').value.trim() || localStorage.getItem('abbey_tournament_slug') || '';
+  if (picker.style.display !== 'none') { picker.style.display = 'none'; btn.textContent = 'Browse ▾'; return; }
+  if (!input) { showStatus('settingsStatus', '✗ Enter a tournament name or slug', false); return; }
+  btn.textContent = '⏳'; btn.disabled = true;
+  showStatus('settingsStatus', `Resolving "${input}"…`, true);
+  try {
+    let tournament = null;
+    const directData = await sggQuery(`query { tournament(slug: "${input}") { slug name events { id name } } }`);
+    tournament = directData?.data?.tournament;
+    if (!tournament) {
+      showStatus('settingsStatus', `Not a full slug — searching by name…`, true);
+      const searchData = await sggQuery(`query { tournaments(query: { filter: { name: "${input}" }, sortBy: "startAt desc", perPage: 5 }) { nodes { slug name startAt events { id name } } } }`);
+      const nodes = searchData?.data?.tournaments?.nodes || [];
+      if (!nodes.length) throw new Error(`No tournament found for "${input}"`);
+      tournament = nodes[0];
+      document.getElementById('tournamentSlug').value = tournament.slug;
+      localStorage.setItem('abbey_tournament_slug', tournament.slug);
+      showStatus('settingsStatus', `Resolved → ${tournament.slug}`, true);
+    }
+    const events = tournament.events || [];
+    const currentId = localStorage.getItem('abbey_sgg_event');
+    picker.innerHTML = `<div class="event-picker"><div class="t-name">${tournament.name}</div>${events.map(e => `<div class="event-opt ${e.id == currentId ? 'selected' : ''}" onclick="selectEvent(${e.id},'${e.name.replace(/'/g,"\\'")}\'','${tournament.name.replace(/'/g,"\\'")}')">​<span>${e.name}</span><span class="eid">#${e.id}</span></div>`).join('')}</div>`;
+    picker.style.display = 'block'; btn.textContent = 'Browse ✕';
+    showStatus('settingsStatus', `${events.length} events — select one`, true);
+  } catch(e) {
+    showStatus('settingsStatus', `✗ ${e.message}`, false); btn.textContent = 'Browse ▾';
+  } finally { btn.disabled = false; }
+}
+
+
+function selectEvent(id, eventName, tournamentName) {
+  document.getElementById('sggEvent').value = String(id);
+  localStorage.setItem('abbey_sgg_event', String(id));
+  document.getElementById('eventPicker').style.display = 'none';
+  document.getElementById('browseBtn').textContent = 'Browse ▾';
+  document.getElementById('eventHint').textContent = `${tournamentName} › ${eventName} (#${id})`;
+  document.getElementById('selectedEventField').style.display = 'block';
+  saveSettings(); toggleSetup(true); toast('Event selected!');
+}
+
+async function loadPhaseGroups() {
+  const event = document.getElementById('sggEvent').value.trim() || localStorage.getItem('abbey_sgg_event');
+  if (!event) { toast('Select an event first', true); return; }
+  const btn = document.getElementById('loadPhasesBtn');
+  const status = document.getElementById('pgLoadStatus');
+  btn.textContent = '⏳'; btn.disabled = true; status.textContent = 'Fetching…';
+  const isId = /^\d+$/.test(event);
+  const eventField = isId ? `event(id: ${event})` : `event(slug: "${event}")`;
+  try {
+    const data = await sggQuery(`query { ${eventField} { phases { id name phaseOrder phaseGroups(query: { page: 1, perPage: 20 }) { nodes { id displayIdentifier state } } } } }`);
+    const phases = data?.data?.event?.phases || [];
+    const savedFilter = localStorage.getItem('abbey_pg_filter') || '';
+    const savedIds = savedFilter ? savedFilter.split(',').map(s => s.trim()) : [];
+    const container = document.getElementById('phaseGroupCheckboxes');
+    container.innerHTML = '';
+    for (const phase of phases.sort((a,b) => a.phaseOrder - b.phaseOrder)) {
+      const groups = phase.phaseGroups?.nodes || [];
+      if (!groups.length) continue;
+      const phaseLabel = document.createElement('div');
+      phaseLabel.style.cssText = 'font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:6px;margin-bottom:3px;';
+      phaseLabel.textContent = phase.name;
+      container.appendChild(phaseLabel);
+      for (const pg of groups) {
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = 'display:flex;align-items:center;gap:6px;';
+        const isChecked = savedIds.includes(String(pg.id));
+        const row = document.createElement('label');
+        row.style.cssText = `display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 12px;background:var(--bg);border:1px solid ${isChecked?'var(--accent)':'var(--border)'};border-radius:6px;font-size:0.82rem;flex:1;transition:border-color 0.15s;`;
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.value = String(pg.id);
+        cb.style.cssText = 'width:auto;accent-color:var(--accent);cursor:pointer;';
+        cb.checked = isChecked;
+        cb.onchange = function() { row.style.borderColor = this.checked ? 'var(--accent)' : 'var(--border)'; saveSettings(); };
+        row.appendChild(cb);
+        row.appendChild(document.createTextNode(`${phase.name} · Pool ${pg.displayIdentifier}`));
+        const idTag = document.createElement('span');
+        idTag.style.cssText = "font-family:'Space Mono',monospace;font-size:0.65rem;color:var(--muted);margin-left:auto;";
+        idTag.textContent = `#${pg.id}`;
+        row.appendChild(idTag);
+        wrapper.appendChild(row);
+        container.appendChild(wrapper);
+      }
+    }
+    status.textContent = `${phases.length} phase(s) loaded`;
+    btn.textContent = '↻ Refresh';
+    updateFilterBar();
+  } catch(e) {
+    status.textContent = `Error: ${e.message}`; toast(`✗ ${e.message}`, true); btn.textContent = '↻ Load Phases';
+  } finally { btn.disabled = false; }
+}
+
+function resolvePlayer(entrantName) {
+  const lower = entrantName.toLowerCase().trim();
+  if (tagMap.has(lower)) return tagMap.get(lower);
+  const stripped = entrantName.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
+  if (stripped && tagMap.has(stripped)) return tagMap.get(stripped);
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Webhook
+// ─────────────────────────────────────────────────────────────
+async function sendWebhook(content) {
+  const webhook = document.getElementById('webhookUrl').value.trim();
+  if (!webhook) return;
+  await fetch(webhook, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({content}) });
+}
+
+// ─────────────────────────────────────────────────────────────
+// Actions
+// ─────────────────────────────────────────────────────────────
+async function markInProgressQuick(setId, silent = false) {
+  try {
+    await sggQuery(`mutation { markSetInProgress(setId: "${setId}") { id state } }`);
+    if (!silent) toast('▶ Set in progress');
+    await fetchManualSets();
+  } catch(e) { if (!silent) toast(`✗ ${e.message}`, true); }
+}
+
+// In-line confirmation logic replacing window.confirm
+function requestDQ(btn, setId, winnerId, loserId, winnerName) {
+  if (btn.classList.contains('confirming')) {
+    btn.textContent = '⏳';
+    submitDQ(setId, winnerId, loserId, winnerName, false);
+  } else {
+    btn.classList.add('confirming');
+    btn.textContent = 'Sure?';
+    setTimeout(() => {
+      if (btn && btn.parentNode) {
+        btn.classList.remove('confirming');
+        btn.textContent = 'DQ';
+      }
+    }, 3000);
+  }
+}
+
+function requestHubDQ(btn, setId) {
+  if (btn.classList.contains('confirming')) {
+    btn.textContent = '⏳';
+    enforceAutoDQManual(setId);
+  } else {
+    const origText = btn.textContent;
+    btn.classList.add('confirming');
+    btn.textContent = 'Confirm?';
+    setTimeout(() => {
+      if (btn && btn.parentNode) {
+        btn.classList.remove('confirming');
+        btn.textContent = origText;
+      }
+    }, 3000);
+  }
+}
+
+async function submitDQ(setId, winnerId, loserId, winnerName, auto = false) {
+  if (completedSetIds.has(String(setId))) return;
+  completedSetIds.add(String(setId));
+  try {
+    await sggQuery(`mutation DQSet { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", isDQ: true) { id state } }`);
+    announcedSetIds.delete(String(setId));
+    hubCheckins.delete(`${setId}-${winnerId}`); hubCheckins.delete(`${setId}-${loserId}`); saveCheckins();
+    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    const entry = matchLog.find(e => e.setId === setId);
+    if (entry) { entry.completed = true; renderLog(); }
+    addPollLog(auto ? `⚡ AUTO-DQ — ${winnerName} advances` : `✓ DQ — ${winnerName} wins`, 'err');
+    toast(`✓ DQ: ${winnerName} wins`);
+    await fetchManualSets();
+  } catch(e) { completedSetIds.delete(String(setId)); toast(`✗ DQ failed: ${e.message}`, true); }
+}
+
+async function reportFullScore(setId, idA, idB, nameA, nameB, prefix="") {
+  const scoreA = parseInt(document.getElementById(`${prefix}scoreA-${setId}`).value) || 0;
+  const scoreB = parseInt(document.getElementById(`${prefix}scoreB-${setId}`).value) || 0;
+  if (scoreA === scoreB) { toast("Scores cannot be tied", true); return; }
+  const winnerId = scoreA > scoreB ? idA : idB;
+  const winnerName = scoreA > scoreB ? nameA : nameB;
+  let gameData = [], g = 1;
+  for (let i=0; i<scoreA; i++) gameData.push(`{winnerId: "${idA}", gameNum: ${g++}}`);
+  for (let i=0; i<scoreB; i++) gameData.push(`{winnerId: "${idB}", gameNum: ${g++}}`);
+  try {
+    await sggQuery(`mutation { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", gameData: [${gameData.join(',')}]) { id state } }`);
+    toast(`🏆 Reported: ${winnerName} wins!`);
+    completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
+    hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
+    // Remove immediately from stable slot list so card stays blank until next poll clears it
+    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    const entry = matchLog.find(e => e.setId === setId);
+    if (entry) { entry.completed = true; renderLog(); }
+    fetchManualSets();
+  } catch(e) { toast(`✗ ${e.message}`, true); }
+}
+
+async function enforceAutoDQManual(setId) {
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) || pendingSetsData.find(s => String(s.id) === String(setId));
+  if (!set) return;
+  const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
+  const nA = set.slots[0]?.entrant?.name||'Player 1', nB = set.slots[1]?.entrant?.name||'Player 2';
+  const seedA = set.slots[0]?.seed?.seedNum||9999, seedB = set.slots[1]?.seed?.seedNum||9999;
+  const hasA = hubCheckins.has(`${set.id}-${idA}`), hasB = hubCheckins.has(`${set.id}-${idB}`);
+  let winId, loseId, winName;
+  if (!hasA && !hasB) {
+    if (seedA > seedB) { winId = idB; loseId = idA; winName = nB; }
+    else { winId = idA; loseId = idB; winName = nA; }
+  } else if (!hasA) { winId = idB; loseId = idA; winName = nB; }
+  else { winId = idA; loseId = idB; winName = nA; }
+  
+  await submitDQ(set.id, winId, loseId, winName, false);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Poll log + venue dashboard
+// ─────────────────────────────────────────────────────────────
+function addPollLog(msg, type = '') {
+  const time = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  pollLogEntries.unshift({ time, msg, type });
+  if (pollLogEntries.length > 40) pollLogEntries.pop();
+  const el = document.getElementById('pollLog');
+  if (el) el.innerHTML = pollLogEntries.map(e => `<div class="entry ${e.type}">[${e.time}] ${e.msg}</div>`).join('');
+}
+
+function copyPollLog() {
+  const text = pollLogEntries.map(e => `[${e.time}] ${e.msg}`).join('\n');
+  navigator.clipboard.writeText(text).then(() => toast('Log copied to clipboard!'));
+}
+
+function updateVenueDashboardUI(allSets) {
+  const allLocs = [
+    ...stationList.map(s => ({ id: s.id, type: 'station', label: `Stn ${s.number}`, sortIdx: s.number })),
+    ...streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
+  ];
+  const activeSets = allSets.filter(s => (s.state === 2 || s.state === 6) && (s.station || s.stream));
+  
+  const busyIds = new Set([
+    ...activeSets.map(s => String(s.station?.id)).filter(id => id !== 'undefined'),
+    ...activeSets.map(s => String(s.stream?.id)).filter(id => id !== 'undefined')
+  ]);
+
+  // Shield recently assigned locations from being double-booked by stale API responses
+  const now = Date.now();
+  for (const [locId, timestamp] of recentlyAssignedLocs.entries()) {
+    if (now - timestamp < 90000) { // 90 seconds protection
+      busyIds.add(String(locId));
+    } else {
+      recentlyAssignedLocs.delete(locId); // cleanup old locks
+    }
+  }
+
+  const freeLocs = allLocs.filter(loc => !busyIds.has(String(loc.id))).sort((a,b) => a.sortIdx - b.sortIdx);
+  
+  const activeListEl = document.getElementById('vActiveList');
+  if (activeListEl) activeListEl.innerHTML = activeSets.length ? activeSets.map(s => { const locLabel = s.station?.number ? `Stn ${s.station.number}` : s.stream?.streamName ? `🎥 ${s.stream.streamName}` : ''; return `<div class="v-match"><span class="stn-num" style="${s.stream?'color:var(--blue)':''}">${locLabel}</span> ${s.slots[0]?.entrant?.name||'?'} vs ${s.slots[1]?.entrant?.name||'?'}</div>`; }).join('') : '<div style="font-size:0.75rem;color:var(--muted)">No sets currently assigned</div>';
+  const freeListEl = document.getElementById('vFreeList');
+  if (freeListEl) freeListEl.innerHTML = freeLocs.length ? freeLocs.map(loc => `<span class="stn-pill" style="${loc.type==='stream'?'border-color:var(--blue);color:var(--blue)':''}">${loc.label}</span>`).join('') : '<div style="font-size:0.75rem;color:var(--accent2)">All locations are occupied</div>';
+  
+  return { activeSets, freeLocs };
+}
+
+function getStreamScore(set) {
+  const sA = set.slots[0]?.seed?.seedNum, sB = set.slots[1]?.seed?.seedNum;
+  if (!sA || !sB) return 9999;
+  return Math.abs(sA - sB) + ((sA + sB) * 0.1);
+}
+
+async function enforceAutoDQ(set) {
+  if (completedSetIds.has(String(set.id))) return;
+  const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
+  const nA = set.slots[0]?.entrant?.name||'Player 1', nB = set.slots[1]?.entrant?.name||'Player 2';
+  const seedA = set.slots[0]?.seed?.seedNum||9999, seedB = set.slots[1]?.seed?.seedNum||9999;
+  const hasA = hubCheckins.has(`${set.id}-${idA}`), hasB = hubCheckins.has(`${set.id}-${idB}`);
+  if (hasA && hasB) { await markInProgressQuick(set.id, true); return; }
+  if (!hasA && !hasB) { (seedA > seedB) ? await submitDQ(set.id, idB, idA, nB, true) : await submitDQ(set.id, idA, idB, nA, true); }
+  else if (!hasA) { await submitDQ(set.id, idB, idA, nB, true); }
+  else { await submitDQ(set.id, idA, idB, nA, true); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Poll
+// ─────────────────────────────────────────────────────────────
+async function doPoll() {
+  addPollLog('Checking start.gg…');
+  const event = document.getElementById('sggEvent').value.trim() || localStorage.getItem('abbey_sgg_event');
+  if (!event) return;
+  const isId = /^\d+$/.test(event);
+  const eventField = isId ? `event(id: ${event})` : `event(slug: "${event}")`;
+
+  try {
+    const [setData, venueData] = await Promise.all([
+      sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query PollVenue { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } streams { id streamName } } } }`).catch(() => null)
+    ]);
+
+    const allSets = setData?.data?.event?.sets?.nodes || [];
+    if (venueData) {
+      stationList = venueData.data.event.tournament.stations.nodes || [];
+      streamList  = venueData.data.event.tournament.streams || [];
+    }
+
+    const { freeLocs } = updateVenueDashboardUI(allSets);
+    let availableStreams  = freeLocs.filter(l => l.type === 'stream');
+    let availableStations = freeLocs.filter(l => l.type === 'station').sort((a,b) => a.sortIdx - b.sortIdx);
+    
+    allFetchedSets = allSets;
+    activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
+    pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
+
+    const autoOn = document.getElementById('autoAssignToggle')?.checked;
+    const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
+    const lowestPhase = Math.min(999, ...allFetchedSets.filter(s => [1,2,6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
+    const lockedPending = pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
+    addPollLog(`📊 auto:${autoOn?"ON":"OFF"} | bypassPhase:${bypassPhase?"ON":"OFF"} | total:${allSets.length} | pending:${pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${stationList.length} str:${streamList.length}) | active:${activeSetsData.length}`);
+
+    // 1. AUTO-ASSIGN — only runs when there are free locations to assign to
+    if (autoOn && pendingSetsData.length > 0 && freeLocs.length > 0) {
+      const lowestIncompletePhase = Math.min(999, ...allFetchedSets.filter(s => [1,2,6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
+
+      let pending = [...pendingSetsData];
+
+      // Phase group filter
+      const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
+      const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      if (pgAllowed.length > 0) {
+        pending = pending.filter(s => pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed)));
+      }
+
+      // Strict phase lock
+      if (!bypassPhase) {
+        pending = pending.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestIncompletePhase);
+      }
+
+      const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (pendingSetsData[0] ? String(pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
+      addPollLog(`🔍 after-filters:${pending.length} | pgFilter:[${pgAllowed.join(',')}] | sample pgId:${samplePgId} | streams:${availableStreams.length} stns:${availableStations.length}`);
+
+      let assignments = [];
+      if (availableStreams.length > 0 && pending.length > 0) {
+        pending.sort((a,b) => { const pA = a.phaseGroup?.phase?.phaseOrder??999, pB = b.phaseGroup?.phase?.phaseOrder??999; return pA !== pB ? pA-pB : getStreamScore(a)-getStreamScore(b); });
+        const n = Math.min(pending.length, availableStreams.length);
+        for (let i=0; i<n; i++) assignments.push({ loc: availableStreams.shift(), set: pending.shift() });
+      }
+      if (availableStations.length > 0 && pending.length > 0) {
+        pending.sort((a,b) => { const pA = a.phaseGroup?.phase?.phaseOrder??999, pB = b.phaseGroup?.phase?.phaseOrder??999; return pA !== pB ? pA-pB : (a.updatedAt||a.createdAt||0)-(b.updatedAt||b.createdAt||0); });
+        const n = Math.min(pending.length, availableStations.length);
+        for (let i=0; i<n; i++) assignments.push({ loc: availableStations.shift(), set: pending.shift() });
+      }
+
+      for (const { loc, set: ps } of assignments) {
+        try {
+          // FIX: Mark set as called FIRST, and capture the new ID if it was a preview set
+          let targetId = ps.id;
+          const callRes = await sggQuery(`mutation { markSetCalled(setId: "${targetId}") { id } }`);
+          
+          // Start.gg might have converted a "preview_" ID into a real numeric ID
+          if (callRes?.data?.markSetCalled?.id) {
+            targetId = callRes.data.markSetCalled.id;
+          }
+          
+          // THEN assign the station/stream using the updated ID
+          try {
+            if (loc.type === 'station') await sggQuery(`mutation { assignStation(setId: "${targetId}", stationId: "${loc.id}") { id } }`);
+            else await sggQuery(`mutation { assignStream(setId: "${targetId}", streamId: "${loc.id}") { id } }`);
+            
+            // Success! Locally lock this location for 90 seconds
+            recentlyAssignedLocs.set(String(loc.id), Date.now());
+            
+          } catch(assignErr) { addPollLog(`⚠️ assign failed for ${targetId}: ${assignErr.message}`, 'err'); }
+          
+          // Inject into local active state so it appears in the Active Matches hub instantly!
+          ps.id = targetId;
+          ps.state = 6;
+          ps.updatedAt = Math.floor(Date.now() / 1000);
+          if (loc.type === 'station') ps.station = { id: loc.id, number: loc.sortIdx };
+          else ps.stream = { id: loc.id, streamName: loc.label.replace('🎥 ', '') };
+          if (!activeSetsData.some(s => String(s.id) === String(targetId))) activeSetsData.push(ps);
+          
+          announcedSetIds.add(String(targetId));
+          if (targetId !== ps.id) announcedSetIds.add(String(ps.id)); // Register both to be safe
+          
+          const nA = ps.slots[0]?.entrant?.name||'???', nB = ps.slots[1]?.entrant?.name||'???';
+          const pA = resolvePlayer(nA), pB = resolvePlayer(nB);
+          const mA = pA?.discordId ? `<@${pA.discordId}>` : nA, mB = pB?.discordId ? `<@${pB.discordId}>` : nB;
+          const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+          await sendWebhook(`📢 ${mA} vs ${mB} — ${loc.label} *(${ps.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
+          logMatch(nA, nB, loc.label, 'auto', targetId);
+          addPollLog(`⚡ Auto-assigned & Pinged: ${nA} vs ${nB} to ${loc.label}`, 'new');
+        } catch(err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); }
+      }
+    }
+
+    // 2. EXTERNAL CALL DETECTOR
+    const calledSets = allSets.filter(s => s.state === 6);
+    let pingCount = 0;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const autoDqOn = document.getElementById('autoDqToggle')?.checked !== false;
+
+    for (const set of calledSets) {
+      if (completedSetIds.has(String(set.id))) continue;
+
+      // Automatically assign a station if it was called externally without one
+      if (!set.station && !set.stream) {
+        let locToAssign = null;
+        if (availableStations.length > 0) locToAssign = availableStations.shift();
+        else if (availableStreams.length > 0) locToAssign = availableStreams.shift();
+
+        if (locToAssign) {
+          try {
+            if (locToAssign.type === 'station') {
+              await sggQuery(`mutation { assignStation(setId: "${set.id}", stationId: "${locToAssign.id}") { id } }`);
+              set.station = { id: locToAssign.id, number: locToAssign.sortIdx };
+            } else {
+              await sggQuery(`mutation { assignStream(setId: "${set.id}", streamId: "${locToAssign.id}") { id } }`);
+              set.stream = { id: locToAssign.id, streamName: locToAssign.label.replace('🎥 ', '') };
+            }
+            recentlyAssignedLocs.set(String(locToAssign.id), Date.now());
+          } catch(e) {
+            addPollLog(`⚠️ Failed to auto-fix missing station for ${set.id}: ${e.message}`, 'err');
+          }
+        }
+      }
+
+      if (!announcedSetIds.has(String(set.id))) {
+        announcedSetIds.add(String(set.id));
+        const nA = set.slots[0]?.entrant?.name||'???', nB = set.slots[1]?.entrant?.name||'???';
+        const pA = resolvePlayer(nA), pB = resolvePlayer(nB);
+        const mA = pA?.discordId ? `<@${pA.discordId}>` : nA, mB = pB?.discordId ? `<@${pB.discordId}>` : nB;
+        const loc = set.station?.number ? `Station ${set.station.number}` : set.stream?.streamName ? `🎥 ${set.stream.streamName}` : '';
+        const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+        await sendWebhook(`📢 ${mA} vs ${mB} — ${loc||'NO STATION'} *(${set.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
+        logMatch(nA, nB, loc||'No Station', 'auto', set.id);
+        addPollLog(`✓ Ext. Call Detected: ${nA} vs ${nB}${loc ? ' → '+loc : ' (no station)'}`, 'new');
+        pingCount++;
+      }
+      
+      const callTime = set.updatedAt || set.createdAt || nowSec;
+      if ((nowSec - callTime) / 60 >= DQ_MINUTES && autoDqOn) {
+         await enforceAutoDQ(set);
+      }
+    }
+
+    if (pingCount === 0) document.getElementById('autoMeta').textContent = `Last poll: ${new Date().toLocaleTimeString()} · ${calledSets.length} sets active`;
+    if (!document.querySelector('#activeSetList input:focus')) renderManualSets();
+    if (!document.querySelector('#tab-hub input:focus')) renderPlayerHub();
+
+  } catch(e) {
+    addPollLog(`Error: ${e.message}`, 'err');
+    document.getElementById('autoMeta').textContent = `Error at ${new Date().toLocaleTimeString()}: ${e.message}`;
+  }
+}
+
+async function startPolling() {
+  const interval = parseInt(document.getElementById('pollInterval').value);
+  if (pollTimer) clearInterval(pollTimer);
+  document.getElementById('startPollBtn').disabled = true;
+  document.getElementById('stopPollBtn').disabled = false;
+  document.getElementById('autoStatus').textContent = 'Watching';
+  document.getElementById('autoBadge').style.display = 'inline-flex';
+  document.getElementById('autoMeta').textContent = 'Watching for sets called on any device…';
+  document.getElementById('manualAutoBar').style.display = 'flex';
+  
+  // Apply the same filters as auto-assign before forcing a start.gg call
+  let validPending = pendingSetsData || [];
+  
+  const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
+  const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  if (pgAllowed.length > 0) {
+    validPending = validPending.filter(s => pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed)));
+  }
+
+  const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
+  if (!bypassPhase && allFetchedSets.length > 0) {
+    const lowestIncompletePhase = Math.min(999, ...allFetchedSets.filter(s => [1,2,6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
+    validPending = validPending.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestIncompletePhase);
+  }
+  
+  // Sort oldest first just like auto-assign
+  validPending.sort((a,b) => (a.updatedAt||a.createdAt||0)-(b.updatedAt||b.createdAt||0));
+
+  if (validPending.length > 0) {
+    try {
+      addPollLog(`⚡ Forcing start.gg call on first pending set: ${validPending[0].id}...`);
+      await sggQuery(`mutation { markSetCalled(setId: "${validPending[0].id}") { id } }`);
+    } catch(e) {
+      addPollLog(`⚠️ Force call failed: ${e.message}`, 'err');
+    }
+  }
+
+  doPoll();
+  pollTimer = setInterval(doPoll, interval);
+  addPollLog(`Auto watch started (every ${interval/1000}s)`, 'new');
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  document.getElementById('startPollBtn').disabled = false;
+  document.getElementById('stopPollBtn').disabled = true;
+  document.getElementById('autoStatus').textContent = 'Stopped';
+  document.getElementById('autoBadge').style.display = 'none';
+  document.getElementById('autoMeta').textContent = 'Stopped';
+  document.getElementById('manualAutoBar').style.display = 'none';
+  addPollLog('Auto watch stopped');
+}
+
+// ─────────────────────────────────────────────────────────────
+// Manual Sets
+// ─────────────────────────────────────────────────────────────
+function formatWait(createdAt) {
+  const mins = Math.floor((Date.now() / 1000 - createdAt) / 60);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60), rem = mins % 60;
+  return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
+}
+
+async function fetchManualSets() {
+  const event = document.getElementById('sggEvent').value.trim() || localStorage.getItem('abbey_sgg_event');
+  if (!event) { toast('No event selected', true); return; }
+  const btn = document.getElementById('fetchSetsBtn');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  const isId = /^\d+$/.test(event);
+  const eventField = isId ? `event(id: ${event})` : `event(slug: "${event}")`;
+  try {
+    const [setData, stationData, streamData] = await Promise.all([
+      sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } } } }`).catch(()=>null),
+      sggQuery(`query { ${eventField} { tournament { streams { id streamName } } } }`).catch(()=>null)
+    ]);
+    const allSets = setData?.data?.event?.sets?.nodes || [];
+    allFetchedSets = allSets.sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+    activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
+    pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
+    if (stationData) stationList = stationData.data.event.tournament.stations.nodes.sort((a,b) => a.number - b.number);
+    if (streamData) streamList = streamData.data.event.tournament.streams || [];
+    renderManualSets(); renderPlayerHub(); updateVenueDashboardUI(allSets);
+    if (btn) btn.textContent = 'Fetch ↓';
+  } catch(e) {
+    toast(`✗ ${e.message}`, true); if (btn) btn.textContent = 'Fetch ↓';
+  } finally { if (btn) btn.disabled = false; }
+}
+
+function renderManualSets() {
+  const el = document.getElementById('manualSetList');
+  if (!el) return;
+  const selectedStates = (document.getElementById('setFetchState')?.value || '1,2,6').split(',').map(Number);
+  const toRender = allFetchedSets.filter(s => selectedStates.includes(s.state));
+  if (!toRender.length) { el.innerHTML = '<div class="sets-empty">No sets match the current filter.</div>'; return; }
+  el.innerHTML = toRender.map(set => {
+    const a = set.slots[0]?.entrant, b = set.slots[1]?.entrant;
+    const nameA = a?.name||'???', nameB = b?.name||'???';
+    const ciA = hubCheckins.has(`${set.id}-${a?.id}`), ciB = hubCheckins.has(`${set.id}-${b?.id}`);
+    const loc = set.station?.number ? `Stn ${set.station.number}` : set.stream?.streamName ? `🎥 ${set.stream.streamName}` : '';
+    const isState6 = set.state===6, isState2 = set.state===2;
+    const waitLabel = set.createdAt ? formatWait(set.createdAt) : '';
+    let badgeHtml = '';
+    if (isState2) badgeHtml = `<span class="set-called-badge" style="background:rgba(0,229,160,0.2);color:var(--accent);">▶ In Progress</span>`;
+    else if (isState6) { const ct = set.updatedAt||set.createdAt||Math.floor(Date.now()/1000); badgeHtml = `<span class="set-called-badge" style="background:var(--accent2);color:#fff;">⏱ <span class="dq-timer-display" data-time="${ct}">0:00</span></span>`; }
+    return `<div class="set-card" id="setcard-${set.id}" style="${isState6?'border-left:3px solid var(--accent2);':isState2?'border-left:3px solid var(--accent);':''}">
+      <div class="set-header">
+        <span class="set-round">${set.fullRoundText||'Set'}</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${waitLabel?`<span style="font-family:'Space Mono',monospace;font-size:0.68rem;color:var(--muted);">${waitLabel}</span>`:''}
+          ${loc?`<span class="set-station-badge">${loc}</span>`:''}
+          ${badgeHtml}
+        </div>
+      </div>
+      <div class="set-player-row">
+        <span class="checkin-dot ${ciA?'yes':'no'}" onclick="toggleHubCheckin('${set.id}','${a?.id}','${nameA.replace(/'/g,"\\'")}')"></span>
+        <span class="set-player-name">${nameA}</span>
+        <div class="set-player-actions"><button class="act-btn dq" onclick="requestDQ(this, '${set.id}', '${b?.id}', '${a?.id}', '${nameB.replace(/'/g,"\\'")}')">DQ</button></div>
+      </div>
+      <div class="set-player-row">
+        <span class="checkin-dot ${ciB?'yes':'no'}" onclick="toggleHubCheckin('${set.id}','${b?.id}','${nameB.replace(/'/g,"\\'")}')"></span>
+        <span class="set-player-name">${nameB}</span>
+        <div class="set-player-actions"><button class="act-btn dq" onclick="requestDQ(this, '${set.id}', '${a?.id}', '${b?.id}', '${nameA.replace(/'/g,"\\'")}')">DQ</button></div>
+      </div>
+      <div class="set-footer">
+        <select id="stn-${set.id}" style="flex:1;font-size:0.78rem;">
+          <option value="">No assignment</option>
+          ${stationList.length?`<optgroup label="Stations">${stationList.map(s=>`<option value="station:${s.id}" data-num="${s.number}" ${set.station?.number==s.number?'selected':''}>Station ${s.number}</option>`).join('')}</optgroup>`:''}
+          ${streamList.length?`<optgroup label="Streams">${streamList.map(s=>`<option value="stream:${s.id}" data-name="${s.streamName}" ${set.stream?.id==s.id?'selected':''}>🎥 ${s.streamName}</option>`).join('')}</optgroup>`:''}
+        </select>
+        <button class="set-call-btn" onclick="callSetFromPanel('${set.id}')">📢 Call</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function callSetFromPanel(setId) {
+  const set = allFetchedSets.find(s => String(s.id) === String(setId));
+  if (!set) return;
+  const stnSelect = document.getElementById(`stn-${setId}`);
+  const stnValue = stnSelect?.value || '';
+  const selectedOpt = stnSelect?.selectedOptions?.[0];
+  const isStation = stnValue.startsWith('station:'), isStream = stnValue.startsWith('stream:');
+  try {
+    let targetId = setId;
+    const callRes = await sggQuery(`mutation { markSetCalled(setId: "${targetId}") { id state } }`);
+    
+    // Start.gg might have converted a "preview_" ID into a real numeric ID
+    if (callRes?.data?.markSetCalled?.id) {
+      targetId = callRes.data.markSetCalled.id;
+    }
+    
+    // THEN assign the location using the updated ID
+    if (isStation) {
+      const sid = stnValue.replace('station:','');
+      await sggQuery(`mutation { assignStation(setId: "${targetId}", stationId: "${sid}") { id } }`);
+      recentlyAssignedLocs.set(String(sid), Date.now()); // Locally lock the station
+    }
+    else if (isStream) {
+      const sid = stnValue.replace('stream:','');
+      await sggQuery(`mutation { assignStream(setId: "${targetId}", streamId: "${sid}") { id } }`);
+      recentlyAssignedLocs.set(String(sid), Date.now()); // Locally lock the stream
+    }
+    
+    const nA = set.slots[0]?.entrant?.name||'???', nB = set.slots[1]?.entrant?.name||'???';
+    const locName = isStation ? `Station ${selectedOpt.dataset.num}` : isStream ? `🎥 ${selectedOpt.dataset.name}` : '?';
+    const pA = resolvePlayer(nA), pB = resolvePlayer(nB);
+    const mA = pA?.discordId ? `<@${pA.discordId}>` : nA, mB = pB?.discordId ? `<@${pB.discordId}>` : nB;
+    const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+    await sendWebhook(`📢 ${mA} vs ${mB} — ${locName} *(${set.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
+    
+    announcedSetIds.add(String(targetId));
+    if (targetId !== setId) announcedSetIds.add(String(setId));
+    
+    toast(`📢 ${nA} vs ${nB}`); logMatch(nA, nB, locName, 'manual', targetId); fetchManualSets();
+  } catch(e) { toast(`✗ ${e.message}`, true); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Hub check-in
+// ─────────────────────────────────────────────────────────────
+async function toggleHubCheckin(setId, entrantId, name) {
+  const key = `${setId}-${entrantId}`;
+  if (hubCheckins.has(key)) hubCheckins.delete(key);
+  else { hubCheckins.add(key); toast(`🟢 ${name} checked in!`); }
+  saveCheckins();
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) || pendingSetsData.find(s => String(s.id) === String(setId));
+  if (set && set.state === 6) {
+    const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
+    if (hubCheckins.has(`${setId}-${idA}`) && hubCheckins.has(`${setId}-${idB}`)) {
+      // Re-render first so both checkmarks are visible, then transition after a short delay
+      renderPlayerHub(); renderManualSets();
+      toast('Both players checked in!');
+      setTimeout(async () => {
+        await markInProgressQuick(setId, true);
+      }, 1200);
+      return;
+    }
+  }
+  renderPlayerHub(); renderManualSets();
+}
+
+// ─────────────────────────────────────────────────────────────
+// Keyboard shortcut: "32Enter" fills scores and submits
+// ─────────────────────────────────────────────────────────────
+let _scoreKbdBuffer = '', _scoreKbdTimer = null;
+
+document.addEventListener('keydown', e => {
+  const overlay = document.getElementById('scoreOverlay');
+  
+  // Only intercept keys if the score overlay is actually open
+  if (overlay && overlay.style.display === 'flex') {
+    
+    // If a number key is pressed
+    if (e.key >= '0' && e.key <= '9') {
+      e.preventDefault(); 
+      _scoreKbdBuffer += e.key; 
+      clearTimeout(_scoreKbdTimer);
+
+      // First number sets Player A
+      if (_scoreKbdBuffer.length === 1) {
+        setScore('A', parseInt(_scoreKbdBuffer[0], 10));
+      } 
+      // Second number sets Player B
+      else if (_scoreKbdBuffer.length === 2) {
+        setScore('B', parseInt(_scoreKbdBuffer[1], 10));
+      }
+
+      // Clear the buffer if they stop typing for 3 seconds
+      _scoreKbdTimer = setTimeout(() => { _scoreKbdBuffer = ''; }, 3000);
+    } 
+    
+    // If Enter is pressed and we have both scores
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (_overlayScoreA !== null && _overlayScoreB !== null && _overlayScoreA !== _overlayScoreB) {
+        submitOverlayScore();
+        _scoreKbdBuffer = ''; 
+      }
+    } 
+    
+    // If Escape is pressed
+    else if (e.key === 'Escape') {
+      closeScoreOverlay();
+    }
+  }
+});
+
+function toggleHubScore(setId) {
+  const el = document.getElementById(`hub-score-modal-${setId}`);
+  const opening = el.style.display !== 'block';
+  document.querySelectorAll('.hub-score-modal').forEach(m => m.style.display = 'none');
+  if (opening) { el.style.display = 'block'; _scoreKbdBuffer = ''; }
+}
+
+function updateScoreUI(setId, nameA, nameB, prefix="") {
+  const sA = parseInt(document.getElementById(`${prefix}scoreA-${setId}`).value)||0;
+  const sB = parseInt(document.getElementById(`${prefix}scoreB-${setId}`).value)||0;
+  const btn = document.getElementById(`${prefix}reportBtn-${setId}`);
+  const inA = document.getElementById(`${prefix}scoreA-${setId}`), inB = document.getElementById(`${prefix}scoreB-${setId}`);
+  if (sA > sB) { btn.innerHTML = `🏆 Report: <strong>${nameA}</strong> Wins!`; inA.style.borderColor='var(--accent)'; inB.style.borderColor='var(--border)'; }
+  else if (sB > sA) { btn.innerHTML = `🏆 Report: <strong>${nameB}</strong> Wins!`; inB.style.borderColor='var(--accent)'; inA.style.borderColor='var(--border)'; }
+  else { btn.innerHTML = `🏆 Submit Score`; inA.style.borderColor='var(--border)'; inB.style.borderColor='var(--border)'; }
+  btn.style.background = 'var(--accent)'; btn.style.color = '#000';
+}
+
+// ─────────────────────────────────────────────────────────────
+// Player Hub — stable fixed-size card grid
+// ─────────────────────────────────────────────────────────────
+function renderPlayerHub() {
+  const activeEl = document.getElementById('hubActiveList');
+  if (!activeEl) return;
+
+  const actionSets = activeSetsData.filter(s => s.state === 2 || s.state === 6);
+  const currentIds = actionSets.map(s => String(s.id));
+  currentIds.forEach(id => { if (!_hubSlotIds.includes(id)) _hubSlotIds.push(id); });
+  _hubSlotIds = _hubSlotIds.filter(id => currentIds.includes(id));
+
+  const CARD_H = '200px';
+
+  const cards = _hubSlotIds.map(slotId => {
+    const set = actionSets.find(s => String(s.id) === slotId);
+
+    if (!set) return `<div style="height:${CARD_H};background:var(--bg);border:1px dashed var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+      <span style="font-size:0.75rem;color:var(--border);">—</span>
+    </div>`;
+
+    const a = set.slots[0]?.entrant, b = set.slots[1]?.entrant;
+    const nameA = a?.name||'???', nameB = b?.name||'???';
+    const loc = set.station?.number ? `Stn ${set.station.number}` : set.stream?.streamName ? `Stream ${set.stream.streamName}` : 'No Location';
+    const escA = nameA.replace(/'/g,"\'"), escB = nameB.replace(/'/g,"\'");
+
+    if (set.state === 6) {
+      const ciA = hubCheckins.has(`${set.id}-${a?.id}`), ciB = hubCheckins.has(`${set.id}-${b?.id}`);
+      const callTime = set.updatedAt||set.createdAt||Math.floor(Date.now()/1000);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const isExpired = (nowSec - callTime) / 60 >= DQ_MINUTES;
+      const autoDqOn = document.getElementById('autoDqToggle')?.checked !== false;
+
+      // Handle Manual DQ Fallback Layout
+      if (isExpired && !autoDqOn) {
+        return `<div style="height:${CARD_H};background:rgba(255,79,109,0.06);border:2px solid var(--accent2);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;animation: slideIn 0.2s ease;overflow:hidden;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0;min-width:0;">
+            <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Timer Expired &middot; ${loc}</span>
+          </div>
+          <div style="text-align:center;font-size:1.1rem;font-weight:800;margin:auto 0;min-width:0;display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;align-items:center;justify-content:center;gap:6px;width:100%;">
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex-shrink:1;">${nameA}</span>
+              <span style="color:var(--muted);font-weight:400;font-size:0.8rem;flex-shrink:0;">vs</span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex-shrink:1;">${nameB}</span>
+            </div>
+            <div style="font-size:0.78rem;color:var(--accent2);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%;">
+               ${(!ciA && !ciB) ? 'Neither checked in' : (!ciA ? `${nameA} missing` : `${nameB} missing`)}
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex-shrink:0;">
+            <button onclick="requestHubDQ(this, '${set.id}')" class="hub-dq-btn">DQ?</button>
+            <button onclick="markInProgressQuick('${set.id}')" style="background:transparent;border:2px solid var(--accent);color:var(--accent);padding:10px;border-radius:8px;font-family:'Space Mono',monospace;font-weight:bold;cursor:pointer;font-size:0.85rem;transition:0.1s;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onmouseover="this.style.background='var(--accent)';this.style.color='#000';" onmouseout="this.style.background='transparent';this.style.color='var(--accent)';">Start Set?</button>
+          </div>
+        </div>`;
+      }
+
+      const brdA=ciA?'var(--accent)':'rgba(255,255,255,0.1)', bgA=ciA?'rgba(0,229,160,0.2)':'rgba(255,255,255,0.04)', clA=ciA?'var(--accent)':'var(--text)';
+      const brdB=ciB?'var(--accent)':'rgba(255,255,255,0.1)', bgB=ciB?'rgba(0,229,160,0.2)':'rgba(255,255,255,0.04)', clB=ciB?'var(--accent)':'var(--text)';
+      return `<div style="height:${CARD_H};background:var(--bg);border:2px solid var(--accent2);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+          <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;">Called &middot; ${loc}</span>
+          <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);">DQ: <span class="dq-timer-display" data-time="${callTime}">0:00</span></span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;">
+          <button onclick="toggleHubCheckin('${set.id}','${a?.id}','${escA}')"
+            style="border-radius:8px;border:2px solid ${brdA};background:${bgA};color:${clA};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden;transition:all 0.15s;">
+            <span style="font-size:1.6rem;line-height:1;">${ciA?'&#x2705;':'&#x2B1C;'}</span>
+            <span style="font-size:0.88rem;font-weight:${ciA?'600':'800'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;text-align:center;">${nameA}</span>
+          </button>
+          <button onclick="toggleHubCheckin('${set.id}','${b?.id}','${escB}')"
+            style="border-radius:8px;border:2px solid ${brdB};background:${bgB};color:${clB};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden;transition:all 0.15s;">
+            <span style="font-size:1.6rem;line-height:1;">${ciB?'&#x2705;':'&#x2B1C;'}</span>
+            <span style="font-size:0.88rem;font-weight:${ciB?'600':'800'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;text-align:center;">${nameB}</span>
+          </button>
+        </div>
+      </div>`;
+    }
+
+    if (set.state === 2) {
+      return `<div style="height:${CARD_H};background:var(--bg);border:2px solid var(--accent);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between;gap:10px;">
+        <div style="flex-shrink:0;">
+          <div style="font-size:0.7rem;color:var(--accent);font-family:'Space Mono',monospace;margin-bottom:6px;">In Progress &middot; ${loc}</div>
+          <div style="font-size:1rem;font-weight:800;line-height:1.3;word-break:break-word;">${nameA} <span style="color:var(--muted);font-weight:400;">vs</span> ${nameB}</div>
+        </div>
+        <button onclick="openScoreOverlay('${set.id}','${a?.id}','${b?.id}','${escA}','${escB}','${loc}')"
+          style="flex-shrink:0;padding:12px;border-radius:8px;border:none;background:var(--accent);color:#000;font-family:'Inter',sans-serif;font-size:0.9rem;font-weight:800;cursor:pointer;letter-spacing:0.3px;">
+          &#x1F4DD; Report Score
+        </button>
+      </div>`;
+    }
+    return '';
+  });
+
+  activeEl.innerHTML = cards.length
+    ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px;">${cards.join('')}</div>`
+    : '<div class="sets-empty" style="padding:40px 0;">No active matches right now.</div>';
+}
+
+// ─────────────────────────────────────────────────────────────
+// Session Log
+// ─────────────────────────────────────────────────────────────
+function logMatch(nameA, nameB, station, source, setId = null) {
+  matchLog.unshift({ p1:nameA, p2:nameB, station, source, setId, completed:false, time: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
+  renderLog();
+}
+
+function resetMatch(setId) {
+  announcedSetIds.delete(String(setId)); completedSetIds.delete(String(setId));
+  const entry = matchLog.find(e => e.setId === setId);
+  if (entry) entry.completed = false;
+  renderLog();
+  addPollLog(`↩ Reset set ${setId} — will re-ping on next poll`, 'new');
+  toast('↩ Reset — will re-ping next poll');
+}
+
+function renderLog() {
+  const el = document.getElementById('matchLog');
+  if (!matchLog.length) { el.innerHTML = '<div class="empty-log">No matches called yet.</div>'; return; }
+  el.innerHTML = matchLog.map(e => `
+    <div class="match-entry ${e.source==='auto'?'auto':''} ${e.completed?'done':''}">
+      <div style="flex:1;min-width:0;">
+        <div class="players">${e.p1} <span style="color:var(--muted)">vs</span> ${e.p2}</div>
+        <div class="meta">${e.time} · ${e.source==='auto'?'⚡ auto':'🖐 manual'}${e.completed?' · <span style="color:var(--accent)">✓ done</span>':''}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        <div class="stn">${e.station}</div>
+        ${e.setId && !e.completed ? `<button class="btn-sm" style="font-size:0.68rem;padding:5px 8px;" onclick="resetMatch('${e.setId}')">↩</button>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+function toast(msg, err=false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.className = err?'err':'';
+  void el.offsetWidth; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Score Overlay — button-based score picker
+// ─────────────────────────────────────────────────────────────
+let _overlaySetId = null, _overlayIdA = null, _overlayIdB = null;
+let _overlayNameA = '', _overlayNameB = '';
+let _overlayScoreA = null, _overlayScoreB = null;
+
+function openScoreOverlay(setId, idA, idB, nameA, nameB, loc) {
+  _overlaySetId = setId; _overlayIdA = idA; _overlayIdB = idB;
+  _overlayNameA = nameA; _overlayNameB = nameB;
+  _overlayScoreA = null; _overlayScoreB = null;
+  document.getElementById('scoreOverlayTitle').textContent = `${nameA} vs ${nameB}`;
+  document.getElementById('scoreOverlayLoc').textContent = loc;
+  document.getElementById('scoreOverlayNameA').textContent = nameA;
+  document.getElementById('scoreOverlayNameB').textContent = nameB;
+  document.getElementById('scoreDisplayA').textContent = '—';
+  document.getElementById('scoreDisplayB').textContent = '—';
+  document.getElementById('scoreDisplayA').style.color = 'var(--muted)';
+  document.getElementById('scoreDisplayB').style.color = 'var(--muted)';
+  // Reset all buttons
+  [0,1,2,3].forEach(n => {
+    ['A','B'].forEach(p => {
+      const btn = document.getElementById(`sb${p}${n}`);
+      if (btn) btn.classList.remove('selected');
+    });
+  });
+  const submitBtn = document.getElementById('scoreOverlayBtn');
+  submitBtn.textContent = 'Select scores above';
+  submitBtn.style.opacity = '0.4';
+  submitBtn.style.pointerEvents = 'none';
+  document.getElementById('scoreOverlay').style.display = 'flex';
+  _scoreKbdBuffer = '';
+}
+
+function setScore(player, value) {
+  if (player === 'A') {
+    _overlayScoreA = value;
+    document.getElementById('scoreDisplayA').textContent = value;
+    document.getElementById('scoreDisplayA').style.color = 'var(--accent)';
+    [0,1,2,3].forEach(n => document.getElementById(`sbA${n}`)?.classList.toggle('selected', n === value));
+  } else {
+    _overlayScoreB = value;
+    document.getElementById('scoreDisplayB').textContent = value;
+    document.getElementById('scoreDisplayB').style.color = 'var(--accent)';
+    [0,1,2,3].forEach(n => document.getElementById(`sbB${n}`)?.classList.toggle('selected', n === value));
+  }
+  updateOverlayScore();
+}
+
+function closeScoreOverlay() {
+  document.getElementById('scoreOverlay').style.display = 'none';
+  _overlaySetId = null; _scoreKbdBuffer = '';
+}
+
+function updateOverlayScore() {
+  if (_overlayScoreA === null || _overlayScoreB === null) return;
+  const submitBtn = document.getElementById('scoreOverlayBtn');
+  if (_overlayScoreA === _overlayScoreB) {
+    submitBtn.textContent = "Scores can't be tied — pick again";
+    submitBtn.style.opacity = '0.4'; submitBtn.style.pointerEvents = 'none';
+    return;
+  }
+  const winnerName = _overlayScoreA > _overlayScoreB ? _overlayNameA : _overlayNameB;
+  const ws = Math.max(_overlayScoreA, _overlayScoreB), ls = Math.min(_overlayScoreA, _overlayScoreB);
+  submitBtn.textContent = `Report: ${winnerName} Wins ${ws}-${ls}`;
+  submitBtn.style.opacity = '1'; submitBtn.style.pointerEvents = 'auto';
+}
+
+async function submitOverlayScore() {
+  if (_overlaySetId === null || _overlayScoreA === null || _overlayScoreB === null) return;
+  if (_overlayScoreA === _overlayScoreB) { toast("Scores can't be tied", true); return; }
+  const setId = _overlaySetId, idA = _overlayIdA, idB = _overlayIdB;
+  const nameA = _overlayNameA, nameB = _overlayNameB;
+  const sA = _overlayScoreA, sB = _overlayScoreB;
+  closeScoreOverlay();
+
+  const winnerId   = sA > sB ? idA : idB;
+  const winnerName = sA > sB ? nameA : nameB;
+  let gameData = [], g = 1;
+  for (let i=0; i<sA; i++) gameData.push(`{winnerId: "${idA}", gameNum: ${g++}}`);
+  for (let i=0; i<sB; i++) gameData.push(`{winnerId: "${idB}", gameNum: ${g++}}`);
+  try {
+    await sggQuery(`mutation { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", gameData: [${gameData.join(',')}]) { id state } }`);
+    toast(`🏆 Reported: ${winnerName} wins!`);
+    completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
+    hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
+    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    const entry = matchLog.find(e => e.setId === setId);
+    if (entry) { entry.completed = true; renderLog(); }
+    fetchManualSets();
+  } catch(e) { toast(`✗ ${e.message}`, true); }
+}
+
+loadSettings();
+renderLog();
+</script>
+</body>
+</html>
