@@ -961,6 +961,18 @@ function getStreamScore(set) {
   return Math.abs(sA - sB) + ((sA + sB) * 0.1);
 }
 
+function streamGrade(score) {
+  if (!score || score >= 9999) return '';
+  if (score <= 3)  return '<span style="color:#00e5a0;font-weight:700;">A+</span>';
+  if (score <= 6)  return '<span style="color:#00e5a0;font-weight:700;">A</span>';
+  if (score <= 10) return '<span style="color:#4fd8a0;font-weight:700;">A-</span>';
+  if (score <= 15) return '<span style="color:#a0d070;font-weight:700;">B+</span>';
+  if (score <= 22) return '<span style="color:#d4c040;font-weight:700;">B</span>';
+  if (score <= 30) return '<span style="color:#e09030;font-weight:700;">B-</span>';
+  if (score <= 50) return '<span style="color:#e06030;font-weight:700;">C</span>';
+  return '<span style="color:#ff4f6d;font-weight:700;">D</span>';
+}
+
 async function enforceAutoDQ(set) {
   if (completedSetIds.has(String(set.id))) return;
   const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
@@ -1078,7 +1090,7 @@ async function doPoll() {
           const mA = pA?.discordId ? `<@${pA.discordId}>` : nA, mB = pB?.discordId ? `<@${pB.discordId}>` : nB;
           const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
           await sendWebhook(`📢 ${mA} vs ${mB} — ${loc.label} *(${ps.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
-          logMatch(nA, nB, loc.label, 'auto', targetId);
+          logMatch(nA, nB, loc.label, 'auto', targetId, ps.slots[0]?.seed?.seedNum, ps.slots[1]?.seed?.seedNum);
           addPollLog(`⚡ Auto-assigned & Pinged: ${nA} vs ${nB} to ${loc.label}`, 'new');
         } catch(err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); }
       }
@@ -1123,7 +1135,7 @@ async function doPoll() {
         const loc = set.station?.number ? `Station ${set.station.number}` : set.stream?.streamName ? `🎥 ${set.stream.streamName}` : '';
         const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
         await sendWebhook(`📢 ${mA} vs ${mB} — ${loc||'NO STATION'} *(${set.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
-        logMatch(nA, nB, loc||'No Station', 'auto', set.id);
+        logMatch(nA, nB, loc||'No Station', 'auto', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum);
         addPollLog(`✓ Ext. Call Detected: ${nA} vs ${nB}${loc ? ' → '+loc : ' (no station)'}`, 'new');
         pingCount++;
       }
@@ -1505,8 +1517,10 @@ function renderPlayerHub() {
 // ─────────────────────────────────────────────────────────────
 // Session Log
 // ─────────────────────────────────────────────────────────────
-function logMatch(nameA, nameB, station, source, setId = null) {
-  matchLog.unshift({ p1:nameA, p2:nameB, station, source, setId, completed:false, time: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
+function logMatch(nameA, nameB, station, source, setId = null, seedA = null, seedB = null) {
+  const _score = (seedA && seedB) ? Math.abs(seedA - seedB) + (seedA + seedB) * 0.1 : 9999;
+  const _grade = streamGrade(_score);
+  matchLog.unshift({ p1:nameA, p2:nameB, station, source, setId, completed:false, grade:_grade, time: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
   renderLog();
 }
 
@@ -1526,7 +1540,7 @@ function renderLog() {
     <div class="match-entry ${e.source==='auto'?'auto':''} ${e.completed?'done':''}">
       <div style="flex:1;min-width:0;">
         <div class="players">${e.p1} <span style="color:var(--muted)">vs</span> ${e.p2}</div>
-        <div class="meta">${e.time} · ${e.source==='auto'?'⚡ auto':'🖐 manual'}${e.completed?' · <span style="color:var(--accent)">✓ done</span>':''}</div>
+        <div class="meta">${e.time} · ${e.source==='auto'?'⚡ auto':'🖐 manual'}${e.grade?' &middot; '+e.grade:''}${e.completed?' · <span style="color:var(--accent)">✓ done</span>':''}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
         <div class="stn">${e.station}</div>
