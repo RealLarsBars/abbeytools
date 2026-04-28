@@ -333,11 +333,11 @@
       <div class="field">
         <label>Poll Interval</label>
         <select id="pollInterval">
-          <option value="15000" selected>Every 15 seconds</option>
+          <option value="15000">Every 15 seconds</option>
           <option value="20000">Every 20 seconds</option>
           <option value="30000">Every 30 seconds</option>
           <option value="45000">Every 45 seconds</option>
-          <option value="60000">Every 60 seconds</option>
+          <option value="60000" selected>Every 60 seconds</option>
         </select>
       </div>
 
@@ -349,6 +349,20 @@
           <span id="pgLoadStatus" style="font-size:0.72rem;color:var(--muted);font-family:'Space Mono',monospace;"></span>
         </div>
         <div id="phaseGroupCheckboxes" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>Stream-Only Phases <span style="color:var(--muted);font-size:0.7rem;">&#x2014; Winners side sets in these phases are held for stream, never sent to stations</span></label>
+        <div id="streamPriorityPhases" style="display:flex;flex-direction:column;gap:6px;"></div>
+        <div class="hint" style="margin-top:4px;">Load phases first, then select which bracket phases should be stream-only.</div>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label>Priority Stream <span style="color:var(--muted);font-size:0.7rem;">&#x2014; stream-only phases will ONLY go to this stream</span></label>
+        <div class="row" style="margin-bottom:0;">
+          <select id="priorityStreamId" onchange="savePriorityStream()">
+            <option value="">Any available stream</option>
+          </select>
+          <button class="btn-sm" onclick="fetchAndPopulateStreams()" style="white-space:nowrap;">&#x21BB; Load</button>
+        </div>
       </div>
 
       <hr class="section-sep">
@@ -400,11 +414,13 @@
 <div class="tab-panel" id="tab-hub">
   <div class="row" style="margin-bottom:16px;">
     <button class="btn-sm" style="flex:1;padding:12px;font-size:1rem;" onclick="fetchManualSets()">&#x21BB; Refresh Matches</button>
+    <button class="btn-sm" id="hubWatchBtn" style="padding:12px 18px;font-size:1rem;background:var(--accent);color:#0d0f12;border-color:var(--accent);" onclick="hubToggleWatch()">&#x25B6; Start Watching</button>
     <button class="btn-sm" onclick="clearPhaseFilter()" style="padding:12px 18px;font-size:1rem;border-color:var(--accent2);color:var(--accent2);white-space:nowrap;">&#x2715; Clear Filters</button>
   </div>
   <div style="font-size:0.65rem;color:var(--muted);font-family:'Space Mono',monospace;text-align:right;margin-top:-10px;margin-bottom:10px;">removes all pool &amp; phase filters &nbsp;|&nbsp; active: <span id="hubFilterStatus">none</span></div>
   
 
+  <div id="hubPhaseChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;align-items:center;min-height:28px;"><span style="font-size:0.68rem;color:var(--muted);font-family:'Space Mono',monospace;">FILTER:</span><span style="font-size:0.68rem;color:var(--muted);font-family:'Space Mono',monospace;">Load phases in Auto Watch to enable filters</span></div>
   <div class="hub-card" style="border-color:var(--accent);">
     <div class="hub-title" style="color:var(--accent);">&#x1F3AE; Active Matches</div>
     <div class="hub-subtitle">Check in by tapping your name. Once both check in, use Report Score to submit.</div>
@@ -464,6 +480,7 @@ let activeSetsData = [], pendingSetsData = [], allFetchedSets = [];
 let stationList = [], streamList = [];
 let hubCheckins = new Set();
 let recentlyAssignedLocs = new Map(); // Local lock for stations: loc.id -> timestamp
+let calledSetIds = new Set(); // All set IDs we have ever called — prevents double-calls
 let DQ_MINUTES = 5.5;
 
 // Stable slot ordering for hub cards — prevents layout shift
@@ -506,6 +523,66 @@ setInterval(() => {
 // ─────────────────────────────────────────────────────────────
 // Settings
 // ─────────────────────────────────────────────────────────────
+function renderHubChips() {
+  const container = document.getElementById('hubPhaseChips');
+  if (!container) return;
+  const sourceChips = [...document.querySelectorAll('#phaseGroupCheckboxes button[data-pg-id]')];
+  if (!sourceChips.length) return;
+  container.innerHTML = '<span style="font-size:0.68rem;color:var(--muted);font-family:\'Space Mono\',monospace;">FILTER:</span>';
+  // Group by phase row
+  const rows = document.querySelectorAll('#phaseGroupCheckboxes > div');
+  rows.forEach(row => {
+    const phaseLabel = row.querySelector('span')?.textContent?.trim();
+    const chips = [...row.querySelectorAll('button[data-pg-id]')];
+    if (!chips.length) return;
+    if (phaseLabel) {
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'font-size:0.65rem;color:var(--muted);font-family:\'Space Mono\',monospace;text-transform:uppercase;letter-spacing:1px;';
+      lbl.textContent = phaseLabel + ':';
+      container.appendChild(lbl);
+    }
+    chips.forEach(src => {
+      const isActive = src.style.color === 'var(--accent)' || src.style.background.includes('229');
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = src.textContent;
+      chip.dataset.pgId = src.dataset.pgId;
+      chip.style.cssText = `padding:3px 10px;border-radius:20px;border:1px solid ${isActive?'var(--accent)':'var(--border)'};background:${isActive?'rgba(0,229,160,0.15)':'transparent'};color:${isActive?'var(--accent)':'var(--muted)'};font-family:'Space Mono',monospace;font-size:0.68rem;cursor:pointer;transition:all 0.12s;`;
+      chip.onclick = function() {
+        // Toggle the source chip in Auto Watch and sync
+        const active = src.style.color === 'var(--accent)' || src.style.background.includes('229');
+        src.style.borderColor = active ? 'var(--border)' : 'var(--accent)';
+        src.style.background  = active ? 'transparent' : 'rgba(0,229,160,0.15)';
+        src.style.color       = active ? 'var(--muted)' : 'var(--accent)';
+        saveSettings();
+        renderHubChips();
+      };
+      container.appendChild(chip);
+    });
+  });
+}
+
+function hubToggleWatch() {
+  if (pollTimer) { stopPolling(); }
+  else { switchTab('auto'); startPolling(); switchTab('hub'); }
+}
+
+function updateHubWatchBtn() {
+  const btn = document.getElementById('hubWatchBtn');
+  if (!btn) return;
+  if (pollTimer) {
+    btn.textContent = '■ Stop Watching';
+    btn.style.background = 'var(--accent2)';
+    btn.style.borderColor = 'var(--accent2)';
+    btn.style.color = '#fff';
+  } else {
+    btn.textContent = '▶ Start Watching';
+    btn.style.background = 'var(--accent)';
+    btn.style.borderColor = 'var(--accent)';
+    btn.style.color = '#0d0f12';
+  }
+}
+
 function clearPhaseFilter() {
   document.querySelectorAll('#phaseGroupCheckboxes button[data-pg-id]').forEach(chip => {
     chip.style.borderColor = 'var(--border)';
@@ -516,6 +593,7 @@ function clearPhaseFilter() {
   updateFilterBar();
   showStatus('settingsStatus', '✓ Filters cleared', true);
   toast('Filters cleared — calling all phases');
+  renderHubChips();
 }
 
 function saveSettings() {
@@ -588,6 +666,7 @@ function updateFilterBar() {
   }
   bar.innerHTML = active.map(b => `<span style="background:rgba(0,229,160,0.15);color:var(--accent);border:1px solid rgba(0,229,160,0.3);border-radius:4px;padding:2px 8px;font-family:'Space Mono',monospace;font-size:0.7rem;white-space:nowrap;">${b.closest('div')?.querySelector('span')?.textContent?.trim() || ''} ${b.textContent}</span>`).join('');
   if (hubStatus) hubStatus.textContent = active.map(b => (b.closest('div')?.querySelector('span')?.textContent?.trim() || '') + ' ' + b.textContent).join(', ');
+  renderHubChips();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -800,6 +879,9 @@ async function loadPhaseGroups() {
     }
     btn.textContent = '↻ Refresh';
     updateFilterBar();
+    renderHubChips();
+    renderStreamPriorityPicker(phases);
+    renderPriorityStreamSelector();
   } catch(e) {
     status.textContent = `Error: ${e.message}`; toast(`✗ ${e.message}`, true); btn.textContent = '↻ Load Phases';
   } finally { btn.disabled = false; }
@@ -956,7 +1038,7 @@ function updateVenueDashboardUI(allSets) {
   // Shield recently assigned locations from being double-booked by stale API responses
   const now = Date.now();
   for (const [locId, timestamp] of recentlyAssignedLocs.entries()) {
-    if (now - timestamp < 90000) { // 90 seconds protection
+    if (now - timestamp < 180000) { // 3 minutes protection
       busyIds.add(String(locId));
     } else {
       recentlyAssignedLocs.delete(locId); // cleanup old locks
@@ -991,6 +1073,89 @@ function streamGrade(score) {
   return '<span style="color:#ff4f6d;font-weight:700;">D</span>';
 }
 
+// Winners side sets in user-selected stream-priority phases are held for stream only
+async function fetchAndPopulateStreams() {
+  const event = document.getElementById('sggEvent').value.trim() || localStorage.getItem('abbey_sgg_event');
+  if (!event) { toast('Select an event first', true); return; }
+  const isId = /^\d+$/.test(event);
+  const eventField = isId ? `event(id: ${event})` : `event(slug: "${event}")`;
+  try {
+    const data = await sggQuery(`query { ${eventField} { tournament { streams { id streamName } } } }`);
+    streamList = data?.data?.event?.tournament?.streams || [];
+    renderPriorityStreamSelector();
+    toast(`✓ ${streamList.length} streams loaded`);
+  } catch(e) { toast(`✗ ${e.message}`, true); }
+}
+
+function savePriorityStream() {
+  const val = document.getElementById('priorityStreamId')?.value || '';
+  localStorage.setItem('abbey_priority_stream_id', val);
+}
+
+function getPriorityStreamId() {
+  return localStorage.getItem('abbey_priority_stream_id') || '';
+}
+
+function renderPriorityStreamSelector() {
+  const sel = document.getElementById('priorityStreamId');
+  if (!sel || !streamList.length) return;
+  const saved = getPriorityStreamId();
+  sel.innerHTML = '<option value="">Any available stream</option>';
+  for (const s of streamList) {
+    const opt = document.createElement('option');
+    opt.value = String(s.id);
+    opt.textContent = s.streamName;
+    opt.selected = String(s.id) === saved;
+    sel.appendChild(opt);
+  }
+}
+
+function renderStreamPriorityPicker(phases) {
+  const container = document.getElementById('streamPriorityPhases');
+  if (!container) return;
+  const saved = getStreamPriorityPhaseIds();
+  container.innerHTML = '';
+  for (const phase of phases.sort((a,b) => a.phaseOrder - b.phaseOrder)) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px;';
+    const label = document.createElement('span');
+    label.style.cssText = 'font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;min-width:54px;';
+    label.textContent = phase.name;
+    row.appendChild(label);
+    const isActive = saved.includes(String(phase.id));
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.textContent = 'Stream Only';
+    chip.dataset.phaseId = String(phase.id);
+    chip.style.cssText = `padding:4px 12px;border-radius:20px;border:1px solid ${isActive?'var(--blue)':'var(--border)'};background:${isActive?'rgba(114,137,218,0.15)':'transparent'};color:${isActive?'var(--blue)':'var(--muted)'};font-family:'Space Mono',monospace;font-size:0.72rem;cursor:pointer;transition:all 0.12s;`;
+    chip.onclick = function() {
+      const current = getStreamPriorityPhaseIds();
+      const id = this.dataset.phaseId;
+      const idx = current.indexOf(id);
+      if (idx > -1) current.splice(idx, 1); else current.push(id);
+      localStorage.setItem('abbey_stream_priority_phases', JSON.stringify(current));
+      const active = current.includes(id);
+      this.style.borderColor = active ? 'var(--blue)' : 'var(--border)';
+      this.style.background  = active ? 'rgba(114,137,218,0.15)' : 'transparent';
+      this.style.color       = active ? 'var(--blue)' : 'var(--muted)';
+    };
+    row.appendChild(chip);
+    container.appendChild(row);
+  }
+}
+
+function getStreamPriorityPhaseIds() {
+  try { return JSON.parse(localStorage.getItem('abbey_stream_priority_phases') || '[]'); } catch(e) { return []; }
+}
+function isStreamPriority(set) {
+  const priorityPhaseIds = getStreamPriorityPhaseIds();
+  if (!priorityPhaseIds.length) return false;
+  const phaseId = String(set.phaseGroup?.phase?.id ?? '');
+  if (!priorityPhaseIds.includes(phaseId)) return false;
+  const round = (set.fullRoundText || '').toLowerCase();
+  return round.includes('winners');
+}
+
 async function enforceAutoDQ(set) {
   if (completedSetIds.has(String(set.id))) return;
   const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
@@ -1015,7 +1180,7 @@ async function doPoll() {
 
   try {
     const [setData, venueData] = await Promise.all([
-      sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
       sggQuery(`query PollVenue { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } streams { id streamName } } } }`).catch(() => null)
     ]);
 
@@ -1043,7 +1208,7 @@ async function doPoll() {
     if (autoOn && pendingSetsData.length > 0 && freeLocs.length > 0) {
       const lowestIncompletePhase = Math.min(999, ...allFetchedSets.filter(s => [1,2,6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
 
-      let pending = [...pendingSetsData];
+      let pending = pendingSetsData.filter(s => !calledSetIds.has(String(s.id)));
 
       // Phase group filter
       const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
@@ -1062,19 +1227,51 @@ async function doPoll() {
       addPollLog(`🔍 after-filters:${pending.length} | pgFilter:[${pgAllowed.join(',')}] | sample pgId:${samplePgId} | streams:${availableStreams.length} stns:${availableStations.length}`);
 
       let assignments = [];
-      if (availableStreams.length > 0 && pending.length > 0) {
-        pending.sort((a,b) => { const pA = a.phaseGroup?.phase?.phaseOrder??999, pB = b.phaseGroup?.phase?.phaseOrder??999; return pA !== pB ? pA-pB : getStreamScore(a)-getStreamScore(b); });
-        const n = Math.min(pending.length, availableStreams.length);
-        for (let i=0; i<n; i++) assignments.push({ loc: availableStreams.shift(), set: pending.shift() });
+
+      // Split pending: stream-priority sets (Winners bracket) vs everything else
+      const streamPriority = pending.filter(s => isStreamPriority(s));
+      const normalPending  = pending.filter(s => !isStreamPriority(s));
+
+      const priorityStreamId = getPriorityStreamId();
+      const mainStream   = priorityStreamId ? availableStreams.find(l => String(l.id) === priorityStreamId) : null;
+      const otherStreams  = availableStreams.filter(l => String(l.id) !== priorityStreamId);
+
+      // Main stream: only accept stream-priority Winners sets
+      if (mainStream && streamPriority.length > 0) {
+        streamPriority.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+        assignments.push({ loc: mainStream, set: streamPriority.shift() });
+        availableStreams.splice(availableStreams.indexOf(mainStream), 1);
+      } else if (mainStream && streamPriority.length === 0) {
+        // Main stream is free but no priority sets — fill with best normal set, no dead air
+        normalPending.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+        if (normalPending.length) assignments.push({ loc: mainStream, set: normalPending.shift() });
+        availableStreams.splice(availableStreams.indexOf(mainStream), 1);
       }
-      if (availableStations.length > 0 && pending.length > 0) {
-        pending.sort((a,b) => { const pA = a.phaseGroup?.phase?.phaseOrder??999, pB = b.phaseGroup?.phase?.phaseOrder??999; return pA !== pB ? pA-pB : (a.updatedAt||a.createdAt||0)-(b.updatedAt||b.createdAt||0); });
-        const n = Math.min(pending.length, availableStations.length);
-        for (let i=0; i<n; i++) assignments.push({ loc: availableStations.shift(), set: pending.shift() });
+
+      // Other streams (sidestream etc.): fill with best normal set
+      for (const stream of otherStreams) {
+        normalPending.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+        if (normalPending.length) assignments.push({ loc: stream, set: normalPending.shift() });
+      }
+
+      // No priority stream configured — original behavior
+      if (!priorityStreamId && availableStreams.length > 0) {
+        const streamPool = streamPriority.length > 0 ? streamPriority : normalPending;
+        streamPool.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+        const picked = streamPool.shift();
+        if (picked) { assignments.push({ loc: availableStreams.shift(), set: picked }); normalPending.splice(normalPending.indexOf(picked), 1); }
+      }
+      // Stream-priority sets that remain NEVER go to stations — they wait for stream
+      // Normal sets fill stations in phase order, then age order
+      if (availableStations.length > 0 && normalPending.length > 0) {
+        normalPending.sort((a,b) => { const pA = a.phaseGroup?.phase?.phaseOrder??999, pB = b.phaseGroup?.phase?.phaseOrder??999; return pA !== pB ? pA-pB : (a.updatedAt||a.createdAt||0)-(b.updatedAt||b.createdAt||0); });
+        const n = Math.min(normalPending.length, availableStations.length);
+        for (let i=0; i<n; i++) assignments.push({ loc: availableStations.shift(), set: normalPending.shift() });
       }
 
       for (const { loc, set: ps } of assignments) {
         try {
+          if (calledSetIds.has(String(ps.id))) { addPollLog(`⚠️ Skipping already-called set ${ps.id}`, 'err'); continue; }
           // FIX: Mark set as called FIRST, and capture the new ID if it was a preview set
           let targetId = ps.id;
           const callRes = await sggQuery(`mutation { markSetCalled(setId: "${targetId}") { id } }`);
@@ -1083,13 +1280,19 @@ async function doPoll() {
           if (callRes?.data?.markSetCalled?.id) {
             targetId = callRes.data.markSetCalled.id;
           }
+          calledSetIds.add(String(targetId));
           
           // THEN assign the station/stream using the updated ID
+          // Lock location and announce set immediately to prevent double-calls
+          recentlyAssignedLocs.set(String(loc.id), Date.now());
+          calledSetIds.add(String(ps.id));
+          announcedSetIds.add(String(ps.id));
+          announcedSetIds.add(String(targetId));
+
           let assignOk = false;
           try {
             if (loc.type === 'station') await sggQuery(`mutation { assignStation(setId: "${targetId}", stationId: "${loc.id}") { id } }`);
             else await sggQuery(`mutation { assignStream(setId: "${targetId}", streamId: "${loc.id}") { id } }`);
-            recentlyAssignedLocs.set(String(loc.id), Date.now());
             assignOk = true;
           } catch(assignErr) { addPollLog(`⚠️ assign failed for ${targetId}: ${assignErr.message}`, 'err'); }
 
@@ -1103,8 +1306,7 @@ async function doPoll() {
           else ps.stream = { id: loc.id, streamName: loc.label.replace('🎥 ', '') };
           if (!activeSetsData.some(s => String(s.id) === String(targetId))) activeSetsData.push(ps);
 
-          announcedSetIds.add(String(targetId));
-          if (targetId !== ps.id) announcedSetIds.add(String(ps.id));
+          // announcedSetIds already set above before assignment
 
           const nA = ps.slots[0]?.entrant?.name||'???', nB = ps.slots[1]?.entrant?.name||'???';
           const pA = resolvePlayer(nA), pB = resolvePlayer(nB);
@@ -1113,7 +1315,7 @@ async function doPoll() {
           await sendWebhook(`📢 ${mA} vs ${mB} — ${loc.label} *(${ps.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
           logMatch(nA, nB, loc.label, 'auto', targetId, ps.slots[0]?.seed?.seedNum, ps.slots[1]?.seed?.seedNum);
           addPollLog(`⚡ Auto-assigned & Pinged: ${nA} vs ${nB} to ${loc.label}`, 'new');
-        } catch(err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); }
+        } catch(err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); completedSetIds.delete(String(ps.id)); }
       }
     }
 
@@ -1217,6 +1419,7 @@ async function startPolling() {
   doPoll();
   pollTimer = setInterval(doPoll, interval);
   addPollLog(`Auto watch started (every ${interval/1000}s)`, 'new');
+  updateHubWatchBtn();
 }
 
 function stopPolling() {
@@ -1228,6 +1431,7 @@ function stopPolling() {
   document.getElementById('autoMeta').textContent = 'Stopped';
   document.getElementById('manualAutoBar').style.display = 'none';
   addPollLog('Auto watch stopped');
+  updateHubWatchBtn();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1250,7 +1454,7 @@ async function fetchManualSets() {
   const eventField = isId ? `event(id: ${event})` : `event(slug: "${event}")`;
   try {
     const [setData, stationData, streamData] = await Promise.all([
-      sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
       sggQuery(`query { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } } } }`).catch(()=>null),
       sggQuery(`query { ${eventField} { tournament { streams { id streamName } } } }`).catch(()=>null)
     ]);
@@ -1497,7 +1701,7 @@ function renderPlayerHub() {
       return `<div style="height:${CARD_H};background:var(--bg);border:2px solid var(--accent2);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
           <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;">Called &middot; ${loc}</span>
-          <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);">DQ: <span class="dq-timer-display" data-time="${callTime}">0:00</span></span>
+          <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);">DQ:&nbsp;<span class="dq-timer-display" data-time="${callTime}">0:00</span></span>
         </div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);flex-shrink:0;">Players checked in:</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;">
