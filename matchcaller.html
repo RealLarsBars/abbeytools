@@ -351,7 +351,7 @@
         <div id="phaseGroupCheckboxes" style="display:flex;flex-direction:column;gap:6px;"></div>
       </div>
       <div class="field" style="margin-top:10px;">
-        <label>Stream-Only Phases <span style="color:var(--muted);font-size:0.7rem;">&#x2014; Winners side sets in these phases are held for stream, never sent to stations</span></label>
+        <label>Phase Stream Tiers <span style="color:var(--muted);font-size:0.7rem;">&#x2014; set per phase how matches are routed to streams</span></label>
         <div id="streamPriorityPhases" style="display:flex;flex-direction:column;gap:6px;"></div>
         <div class="hint" style="margin-top:4px;">Load phases first, then select which bracket phases should be stream-only.</div>
       </div>
@@ -480,7 +480,6 @@ let activeSetsData = [], pendingSetsData = [], allFetchedSets = [];
 let stationList = [], streamList = [];
 let hubCheckins = new Set();
 let recentlyAssignedLocs = new Map(); // Local lock for stations: loc.id -> timestamp
-let calledSetIds = new Set(); // All set IDs we have ever called — prevents double-calls
 let DQ_MINUTES = 5.5;
 
 // Stable slot ordering for hub cards — prevents layout shift
@@ -1110,36 +1109,47 @@ function renderPriorityStreamSelector() {
   }
 }
 
+function getPhaseTiers() {
+  try { return JSON.parse(localStorage.getItem('abbey_phase_tiers') || '{}'); } catch(e) { return {}; }
+}
+function setPhaseTier(phaseId, tier) {
+  const tiers = getPhaseTiers();
+  if (tier) tiers[phaseId] = tier; else delete tiers[phaseId];
+  localStorage.setItem('abbey_phase_tiers', JSON.stringify(tiers));
+  // Keep legacy abbey_stream_priority_phases in sync for isStreamPriority checks
+  const ids = Object.keys(tiers);
+  localStorage.setItem('abbey_stream_priority_phases', JSON.stringify(ids));
+}
+
 function renderStreamPriorityPicker(phases) {
   const container = document.getElementById('streamPriorityPhases');
   if (!container) return;
-  const saved = getStreamPriorityPhaseIds();
+  const tiers = getPhaseTiers();
   container.innerHTML = '';
   for (const phase of phases.sort((a,b) => a.phaseOrder - b.phaseOrder)) {
+    const id = String(phase.id);
+    const current = tiers[id] || null;
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px;';
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;';
     const label = document.createElement('span');
     label.style.cssText = 'font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;min-width:54px;';
     label.textContent = phase.name;
     row.appendChild(label);
-    const isActive = saved.includes(String(phase.id));
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.textContent = 'Stream Only';
-    chip.dataset.phaseId = String(phase.id);
-    chip.style.cssText = `padding:4px 12px;border-radius:20px;border:1px solid ${isActive?'var(--blue)':'var(--border)'};background:${isActive?'rgba(114,137,218,0.15)':'transparent'};color:${isActive?'var(--blue)':'var(--muted)'};font-family:'Space Mono',monospace;font-size:0.72rem;cursor:pointer;transition:all 0.12s;`;
-    chip.onclick = function() {
-      const current = getStreamPriorityPhaseIds();
-      const id = this.dataset.phaseId;
-      const idx = current.indexOf(id);
-      if (idx > -1) current.splice(idx, 1); else current.push(id);
-      localStorage.setItem('abbey_stream_priority_phases', JSON.stringify(current));
-      const active = current.includes(id);
-      this.style.borderColor = active ? 'var(--blue)' : 'var(--border)';
-      this.style.background  = active ? 'rgba(114,137,218,0.15)' : 'transparent';
-      this.style.color       = active ? 'var(--blue)' : 'var(--muted)';
-    };
-    row.appendChild(chip);
+    [['stream-preferred','Top 8','var(--blue)','rgba(114,137,218,0.15)'],
+     ['winners-main','Top 24','#a78bfa','rgba(167,139,250,0.12)']].forEach(([tier, label2, col, bg]) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = label2;
+      const active = current === tier;
+      chip.style.cssText = `padding:4px 12px;border-radius:20px;border:1px solid ${active?col:'var(--border)'};background:${active?bg:'transparent'};color:${active?col:'var(--muted)'};font-family:'Space Mono',monospace;font-size:0.72rem;cursor:pointer;transition:all 0.12s;`;
+      chip.onclick = function() {
+        const t = getPhaseTiers();
+        const newTier = t[id] === tier ? null : tier;
+        setPhaseTier(id, newTier);
+        renderStreamPriorityPicker(phases);
+      };
+      row.appendChild(chip);
+    });
     container.appendChild(row);
   }
 }
@@ -1147,14 +1157,28 @@ function renderStreamPriorityPicker(phases) {
 function getStreamPriorityPhaseIds() {
   try { return JSON.parse(localStorage.getItem('abbey_stream_priority_phases') || '[]'); } catch(e) { return []; }
 }
-function isStreamPriority(set) {
-  const priorityPhaseIds = getStreamPriorityPhaseIds();
-  if (!priorityPhaseIds.length) return false;
+// Returns stream tier for a set:
+// 'main-only'        — Winners Top8, Losers Finals, Grand Finals
+// 'stream-preferred' — other Losers sets in stream-priority phases
+// 'normal'           — everything else
+function getSetStreamTier(set) {
   const phaseId = String(set.phaseGroup?.phase?.id ?? '');
-  if (!priorityPhaseIds.includes(phaseId)) return false;
+  const tiers = getPhaseTiers();
+  const phaseTier = tiers[phaseId];
+  if (!phaseTier) return 'normal';
   const round = (set.fullRoundText || '').toLowerCase();
-  return round.includes('winners');
+  const isWinners = round.includes('winners') || round.includes('grand final');
+  if (phaseTier === 'stream-preferred') {
+    // Winners → main only; Losers → main first, sidestream fallback
+    return isWinners ? 'main-only' : 'stream-preferred';
+  }
+  if (phaseTier === 'winners-main') {
+    // Winners → main only; Losers → normal (stations/any stream)
+    return isWinners ? 'main-only' : 'normal';
+  }
+  return 'normal';
 }
+function isStreamPriority(set) { return getSetStreamTier(set) !== 'normal'; }
 
 async function enforceAutoDQ(set) {
   if (completedSetIds.has(String(set.id))) return;
@@ -1204,122 +1228,7 @@ async function doPoll() {
     const lockedPending = pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
     addPollLog(`📊 auto:${autoOn?"ON":"OFF"} | bypassPhase:${bypassPhase?"ON":"OFF"} | total:${allSets.length} | pending:${pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${stationList.length} str:${streamList.length}) | active:${activeSetsData.length}`);
 
-    // 1. AUTO-ASSIGN — only runs when there are free locations to assign to
-    if (autoOn && pendingSetsData.length > 0 && freeLocs.length > 0) {
-      const lowestIncompletePhase = Math.min(999, ...allFetchedSets.filter(s => [1,2,6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
-
-      let pending = pendingSetsData.filter(s => !calledSetIds.has(String(s.id)));
-
-      // Phase group filter
-      const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
-      const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
-      if (pgAllowed.length > 0) {
-        // Pool filter active: restrict to selected pools AND strict phase lock
-        pending = pending.filter(s => pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed)));
-        pending = pending.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestIncompletePhase);
-      } else {
-        // No pool filter: sort by phase order so lower phases are always called first,
-        // but later phases (Top 24 etc.) can fill any remaining free stations
-        pending.sort((a, b) => (a.phaseGroup?.phase?.phaseOrder ?? 999) - (b.phaseGroup?.phase?.phaseOrder ?? 999));
-      }
-
-      const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (pendingSetsData[0] ? String(pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
-      addPollLog(`🔍 after-filters:${pending.length} | pgFilter:[${pgAllowed.join(',')}] | sample pgId:${samplePgId} | streams:${availableStreams.length} stns:${availableStations.length}`);
-
-      let assignments = [];
-
-      // Split pending: stream-priority sets (Winners bracket) vs everything else
-      const streamPriority = pending.filter(s => isStreamPriority(s));
-      const normalPending  = pending.filter(s => !isStreamPriority(s));
-
-      const priorityStreamId = getPriorityStreamId();
-      const mainStream   = priorityStreamId ? availableStreams.find(l => String(l.id) === priorityStreamId) : null;
-      const otherStreams  = availableStreams.filter(l => String(l.id) !== priorityStreamId);
-
-      // Main stream: only accept stream-priority Winners sets
-      if (mainStream && streamPriority.length > 0) {
-        streamPriority.sort((a,b) => getStreamScore(a) - getStreamScore(b));
-        assignments.push({ loc: mainStream, set: streamPriority.shift() });
-        availableStreams.splice(availableStreams.indexOf(mainStream), 1);
-      } else if (mainStream && streamPriority.length === 0) {
-        // Main stream is free but no priority sets — fill with best normal set, no dead air
-        normalPending.sort((a,b) => getStreamScore(a) - getStreamScore(b));
-        if (normalPending.length) assignments.push({ loc: mainStream, set: normalPending.shift() });
-        availableStreams.splice(availableStreams.indexOf(mainStream), 1);
-      }
-
-      // Other streams (sidestream etc.): fill with best normal set
-      for (const stream of otherStreams) {
-        normalPending.sort((a,b) => getStreamScore(a) - getStreamScore(b));
-        if (normalPending.length) assignments.push({ loc: stream, set: normalPending.shift() });
-      }
-
-      // No priority stream configured — original behavior
-      if (!priorityStreamId && availableStreams.length > 0) {
-        const streamPool = streamPriority.length > 0 ? streamPriority : normalPending;
-        streamPool.sort((a,b) => getStreamScore(a) - getStreamScore(b));
-        const picked = streamPool.shift();
-        if (picked) { assignments.push({ loc: availableStreams.shift(), set: picked }); normalPending.splice(normalPending.indexOf(picked), 1); }
-      }
-      // Stream-priority sets that remain NEVER go to stations — they wait for stream
-      // Normal sets fill stations in phase order, then age order
-      if (availableStations.length > 0 && normalPending.length > 0) {
-        normalPending.sort((a,b) => { const pA = a.phaseGroup?.phase?.phaseOrder??999, pB = b.phaseGroup?.phase?.phaseOrder??999; return pA !== pB ? pA-pB : (a.updatedAt||a.createdAt||0)-(b.updatedAt||b.createdAt||0); });
-        const n = Math.min(normalPending.length, availableStations.length);
-        for (let i=0; i<n; i++) assignments.push({ loc: availableStations.shift(), set: normalPending.shift() });
-      }
-
-      for (const { loc, set: ps } of assignments) {
-        try {
-          if (calledSetIds.has(String(ps.id))) { addPollLog(`⚠️ Skipping already-called set ${ps.id}`, 'err'); continue; }
-          // FIX: Mark set as called FIRST, and capture the new ID if it was a preview set
-          let targetId = ps.id;
-          const callRes = await sggQuery(`mutation { markSetCalled(setId: "${targetId}") { id } }`);
-          
-          // Start.gg might have converted a "preview_" ID into a real numeric ID
-          if (callRes?.data?.markSetCalled?.id) {
-            targetId = callRes.data.markSetCalled.id;
-          }
-          calledSetIds.add(String(targetId));
-          
-          // THEN assign the station/stream using the updated ID
-          // Lock location and announce set immediately to prevent double-calls
-          recentlyAssignedLocs.set(String(loc.id), Date.now());
-          calledSetIds.add(String(ps.id));
-          announcedSetIds.add(String(ps.id));
-          announcedSetIds.add(String(targetId));
-
-          let assignOk = false;
-          try {
-            if (loc.type === 'station') await sggQuery(`mutation { assignStation(setId: "${targetId}", stationId: "${loc.id}") { id } }`);
-            else await sggQuery(`mutation { assignStream(setId: "${targetId}", streamId: "${loc.id}") { id } }`);
-            assignOk = true;
-          } catch(assignErr) { addPollLog(`⚠️ assign failed for ${targetId}: ${assignErr.message}`, 'err'); }
-
-          if (!assignOk) throw new Error(`Assignment failed for ${targetId}`);
-
-          // Inject into local active state so it appears in the Active Matches hub instantly!
-          ps.id = targetId;
-          ps.state = 6;
-          ps.updatedAt = Math.floor(Date.now() / 1000);
-          if (loc.type === 'station') ps.station = { id: loc.id, number: loc.sortIdx };
-          else ps.stream = { id: loc.id, streamName: loc.label.replace('🎥 ', '') };
-          if (!activeSetsData.some(s => String(s.id) === String(targetId))) activeSetsData.push(ps);
-
-          // announcedSetIds already set above before assignment
-
-          const nA = ps.slots[0]?.entrant?.name||'???', nB = ps.slots[1]?.entrant?.name||'???';
-          const pA = resolvePlayer(nA), pB = resolvePlayer(nB);
-          const mA = pA?.discordId ? `<@${pA.discordId}>` : nA, mB = pB?.discordId ? `<@${pB.discordId}>` : nB;
-          const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
-          await sendWebhook(`📢 ${mA} vs ${mB} — ${loc.label} *(${ps.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
-          logMatch(nA, nB, loc.label, 'auto', targetId, ps.slots[0]?.seed?.seedNum, ps.slots[1]?.seed?.seedNum);
-          addPollLog(`⚡ Auto-assigned & Pinged: ${nA} vs ${nB} to ${loc.label}`, 'new');
-        } catch(err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); completedSetIds.delete(String(ps.id)); }
-      }
-    }
-
-    // 2. EXTERNAL CALL DETECTOR
+    // 1. EXTERNAL CALL DETECTOR — process externally-called sets before auto-assigning
     const calledSets = allSets.filter(s => s.state === 6);
     let pingCount = 0;
     const nowSec = Math.floor(Date.now() / 1000);
@@ -1368,6 +1277,142 @@ async function doPoll() {
          await enforceAutoDQ(set);
       }
     }
+
+    // 2. AUTO-ASSIGN — only runs when there are free locations to assign to
+    if (autoOn && pendingSetsData.length > 0 && freeLocs.length > 0) {
+      const lowestIncompletePhase = Math.min(999, ...allFetchedSets.filter(s => [1,2,6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
+
+      let pending = [...pendingSetsData];
+
+      // Phase group filter
+      const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
+      const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      if (pgAllowed.length > 0) {
+        // Pool filter active: restrict to selected pools AND strict phase lock
+        pending = pending.filter(s => pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed)));
+        pending = pending.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestIncompletePhase);
+      } else {
+        // No pool filter: sort by phase order so lower phases are always called first,
+        // but later phases (Top 24 etc.) can fill any remaining free stations
+        pending.sort((a, b) => (a.phaseGroup?.phase?.phaseOrder ?? 999) - (b.phaseGroup?.phase?.phaseOrder ?? 999));
+      }
+
+      const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (pendingSetsData[0] ? String(pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
+      addPollLog(`🔍 after-filters:${pending.length} | pgFilter:[${pgAllowed.join(',')}] | sample pgId:${samplePgId} | streams:${availableStreams.length} stns:${availableStations.length}`);
+
+      let assignments = [];
+
+      // Split pending by stream tier
+      const allMainOnly     = pending.filter(s => getSetStreamTier(s) === 'main-only');
+      const allStreamPref   = pending.filter(s => getSetStreamTier(s) === 'stream-preferred');
+      const normalPending   = pending.filter(s => getSetStreamTier(s) === 'normal');
+
+      // Phase lock for stream-priority sets: find lowest phase that still has
+      // any stream-priority sets active OR pending, only call from that phase
+      const streamPriorityActive = activeSetsData.filter(s => isStreamPriority(s));
+      const allStreamPriority = [...allMainOnly, ...allStreamPref, ...streamPriorityActive];
+      const lowestStreamPhase = allStreamPriority.length
+        ? Math.min(...allStreamPriority.map(s => s.phaseGroup?.phase?.phaseOrder ?? 999))
+        : 999;
+      const mainOnlySets    = allMainOnly.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestStreamPhase);
+      const streamPreferred = allStreamPref.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestStreamPhase);
+      const streamPriority  = [...mainOnlySets, ...streamPreferred]; // alias
+
+      const priorityStreamId = getPriorityStreamId();
+      const mainStream  = priorityStreamId ? availableStreams.find(l => String(l.id) === priorityStreamId) : null;
+      const otherStreams = availableStreams.filter(l => String(l.id) !== priorityStreamId);
+
+      if (mainStream) {
+        availableStreams.splice(availableStreams.indexOf(mainStream), 1);
+        // Main stream priority: main-only → stream-preferred → normal (no dead air)
+        let mainSet = null;
+        if (mainOnlySets.length) {
+          mainOnlySets.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+          mainSet = mainOnlySets.shift();
+        } else if (streamPreferred.length) {
+          streamPreferred.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+          mainSet = streamPreferred.shift();
+        } else {
+          normalPending.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+          mainSet = normalPending.shift() || null;
+        }
+        if (mainSet) assignments.push({ loc: mainStream, set: mainSet });
+      }
+
+      // Sidestream/other streams: stream-preferred first, then normal — main-only sets never go here
+      for (const stream of otherStreams) {
+        let picked = null;
+        if (streamPreferred.length) {
+          streamPreferred.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+          picked = streamPreferred.shift();
+        } else {
+          normalPending.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+          picked = normalPending.shift() || null;
+        }
+        if (picked) assignments.push({ loc: stream, set: picked });
+      }
+
+      // No priority stream configured — best available goes to any stream
+      if (!priorityStreamId && availableStreams.length > 0) {
+        const streamPool = mainOnlySets.length ? mainOnlySets : streamPreferred.length ? streamPreferred : normalPending;
+        streamPool.sort((a,b) => getStreamScore(a) - getStreamScore(b));
+        const picked = streamPool.shift();
+        if (picked) assignments.push({ loc: availableStreams.shift(), set: picked });
+      }
+      // main-only and stream-preferred sets never go to stations — they wait for a stream
+      // Only normal sets fill stations
+      if (availableStations.length > 0 && normalPending.length > 0) {
+        normalPending.sort((a,b) => { const pA = a.phaseGroup?.phase?.phaseOrder??999, pB = b.phaseGroup?.phase?.phaseOrder??999; return pA !== pB ? pA-pB : (a.updatedAt||a.createdAt||0)-(b.updatedAt||b.createdAt||0); });
+        const n = Math.min(normalPending.length, availableStations.length);
+        for (let i=0; i<n; i++) assignments.push({ loc: availableStations.shift(), set: normalPending.shift() });
+      }
+
+      for (const { loc, set: ps } of assignments) {
+        try {
+          // FIX: Mark set as called FIRST, and capture the new ID if it was a preview set
+          let targetId = ps.id;
+          const callRes = await sggQuery(`mutation { markSetCalled(setId: "${targetId}") { id } }`);
+          
+          // Start.gg might have converted a "preview_" ID into a real numeric ID
+          if (callRes?.data?.markSetCalled?.id) {
+            targetId = callRes.data.markSetCalled.id;
+          }
+          // THEN assign the station/stream using the updated ID
+          // Lock location and announce set immediately to prevent double-calls
+          recentlyAssignedLocs.set(String(loc.id), Date.now());
+          announcedSetIds.add(String(ps.id));
+          announcedSetIds.add(String(targetId));
+
+          let assignOk = false;
+          try {
+            if (loc.type === 'station') await sggQuery(`mutation { assignStation(setId: "${targetId}", stationId: "${loc.id}") { id } }`);
+            else await sggQuery(`mutation { assignStream(setId: "${targetId}", streamId: "${loc.id}") { id } }`);
+            assignOk = true;
+          } catch(assignErr) { addPollLog(`⚠️ assign failed for ${targetId}: ${assignErr.message}`, 'err'); }
+
+          if (!assignOk) throw new Error(`Assignment failed for ${targetId}`);
+
+          // Inject into local active state so it appears in the Active Matches hub instantly!
+          ps.id = targetId;
+          ps.state = 6;
+          ps.updatedAt = Math.floor(Date.now() / 1000);
+          if (loc.type === 'station') ps.station = { id: loc.id, number: loc.sortIdx };
+          else ps.stream = { id: loc.id, streamName: loc.label.replace('🎥 ', '') };
+          if (!activeSetsData.some(s => String(s.id) === String(targetId))) activeSetsData.push(ps);
+
+          // announcedSetIds already set above before assignment
+
+          const nA = ps.slots[0]?.entrant?.name||'???', nB = ps.slots[1]?.entrant?.name||'???';
+          const pA = resolvePlayer(nA), pB = resolvePlayer(nB);
+          const mA = pA?.discordId ? `<@${pA.discordId}>` : nA, mB = pB?.discordId ? `<@${pB.discordId}>` : nB;
+          const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+          await sendWebhook(`📢 ${mA} vs ${mB} — ${loc.label} *(${ps.fullRoundText})*\n🚶 **Head to the TO area upstairs to check in for your set before playing.**\n⚠️ Check in by <t:${dTs}:t> (<t:${dTs}:R>) or risk DQ\n——————————————————\n`);
+          logMatch(nA, nB, loc.label, 'auto', targetId, ps.slots[0]?.seed?.seedNum, ps.slots[1]?.seed?.seedNum);
+          addPollLog(`⚡ Auto-assigned & Pinged: ${nA} vs ${nB} to ${loc.label}`, 'new');
+        } catch(err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); completedSetIds.delete(String(ps.id)); }
+      }
+    }
+
 
     if (pingCount === 0) document.getElementById('autoMeta').textContent = `Last poll: ${new Date().toLocaleTimeString()} · ${calledSets.length} sets active`;
     if (!document.querySelector('#activeSetList input:focus')) renderManualSets();
