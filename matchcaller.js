@@ -1,0 +1,1963 @@
+// ─────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────
+let players = [], tagMap = new Map(), matchLog = [], pollTimer = null;
+let announcedSetIds = new Set(), completedSetIds = new Set(), pollLogEntries = [];
+let activeSetsData = [], pendingSetsData = [], allFetchedSets = [];
+let stationList = [], streamList = [];
+let hubCheckins = new Set();
+let recentlyAssignedLocs = new Map(); // Local lock for stations: loc.id -> timestamp
+let DQ_MINUTES = 5.5;
+
+// Stable slot ordering for hub cards — prevents layout shift
+let _hubSlotIds = [];
+
+const $ = id => document.getElementById(id);
+let activeTimers = [];
+
+function updateTimerCache() {
+  activeTimers = Array.from(document.querySelectorAll('.dq-timer-display')).map(el => ({
+    el,
+    callTime: parseInt(el.dataset.time, 10)
+  })).filter(t => t.callTime);
+}
+
+function getEventField() {
+  const event = $('sggEvent')?.value.trim() || localStorage.getItem('abbey_sgg_event');
+  if (!event) return null;
+  return /^\d+$/.test(event) ? `event(id: ${event})` : `event(slug: "${event}")`;
+}
+
+function getLowestIncompletePhase() {
+  return Math.min(999, ...allFetchedSets.filter(s => [1, 2, 6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
+}
+
+function getDiscordMention(playerName) {
+  const p = resolvePlayer(playerName);
+  return p?.discordId ? `<@${p.discordId}>` : playerName;
+}
+
+try {
+  hubCheckins = new Set(JSON.parse(localStorage.getItem('abbey_checkins') || '[]'));
+} catch (e) { hubCheckins = new Set(); }
+
+function saveCheckins() {
+  localStorage.setItem('abbey_checkins', JSON.stringify([...hubCheckins]));
+}
+
+// ─────────────────────────────────────────────────────────────
+// Setup accordion
+// ─────────────────────────────────────────────────────────────
+function toggleSetup(forceCollapse = null) {
+  const content = document.getElementById('setupContent');
+  const icon = document.getElementById('setupToggleIcon');
+  const shouldCollapse = forceCollapse !== null ? forceCollapse : content.style.display !== 'none';
+  content.style.display = shouldCollapse ? 'none' : 'grid';
+  icon.textContent = shouldCollapse ? '▼' : '▲';
+}
+
+// ─────────────────────────────────────────────────────────────
+// DQ timer
+// ─────────────────────────────────────────────────────────────
+setInterval(() => {
+  if (!activeTimers.length) return;
+  const nowSec = Math.floor(Date.now() / 1000);
+  activeTimers.forEach(({ el, callTime }) => {
+    const remaining = Math.max(0, (DQ_MINUTES * 60) - (nowSec - callTime));
+    const m = Math.floor(remaining / 60), s = Math.floor(remaining % 60).toString().padStart(2, '0');
+    el.textContent = `${m}:${s}`;
+    if (remaining === 0) el.style.color = 'var(--accent2)';
+  });
+}, 1000);
+
+// ─────────────────────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────────────────────
+function renderHubChips() {
+  const container = document.getElementById('hubPhaseChips');
+  if (!container) return;
+  const sourceChips = [...document.querySelectorAll('#phaseGroupCheckboxes button[data-pg-id]')];
+  if (!sourceChips.length) return;
+  container.innerHTML = '<span style="font-size:0.68rem;color:var(--muted);font-family:\'Space Mono\',monospace;">FILTER:</span>';
+  // Group by phase row
+  const rows = document.querySelectorAll('#phaseGroupCheckboxes > div');
+  rows.forEach(row => {
+    const phaseLabel = row.querySelector('span')?.textContent?.trim();
+    const chips = [...row.querySelectorAll('button[data-pg-id]')];
+    if (!chips.length) return;
+    if (phaseLabel) {
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'font-size:0.65rem;color:var(--muted);font-family:\'Space Mono\',monospace;text-transform:uppercase;letter-spacing:1px;';
+      lbl.textContent = phaseLabel + ':';
+      container.appendChild(lbl);
+    }
+    chips.forEach(src => {
+      const isActive = src.style.color === 'var(--accent)' || src.style.background.includes('229');
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = src.textContent;
+      chip.dataset.pgId = src.dataset.pgId;
+      chip.style.cssText = `padding:3px 10px;border-radius:20px;border:1px solid ${isActive ? 'var(--accent)' : 'var(--border)'};background:${isActive ? 'rgba(0,229,160,0.15)' : 'transparent'};color:${isActive ? 'var(--accent)' : 'var(--muted)'};font-family:'Space Mono',monospace;font-size:0.68rem;cursor:pointer;transition:all 0.12s;`;
+      chip.onclick = function () {
+        // Toggle the source chip in Auto Watch and sync
+        const active = src.style.color === 'var(--accent)' || src.style.background.includes('229');
+        src.style.borderColor = active ? 'var(--border)' : 'var(--accent)';
+        src.style.background = active ? 'transparent' : 'rgba(0,229,160,0.15)';
+        src.style.color = active ? 'var(--muted)' : 'var(--accent)';
+        saveSettings();
+        renderHubChips();
+      };
+      container.appendChild(chip);
+    });
+  });
+}
+
+function hubToggleWatch() {
+  if (pollTimer) { stopPolling(); }
+  else { switchTab('auto'); startPolling(); switchTab('hub'); }
+}
+
+function updateHubWatchBtn() {
+  const btn = document.getElementById('hubWatchBtn');
+  if (!btn) return;
+  if (pollTimer) {
+    btn.textContent = '■ Stop Watching';
+    btn.style.background = 'var(--accent2)';
+    btn.style.borderColor = 'var(--accent2)';
+    btn.style.color = '#fff';
+  } else {
+    btn.textContent = '▶ Start Watching';
+    btn.style.background = 'var(--accent)';
+    btn.style.borderColor = 'var(--accent)';
+    btn.style.color = '#0d0f12';
+  }
+}
+
+function clearPhaseFilter() {
+  document.querySelectorAll('#phaseGroupCheckboxes button[data-pg-id]').forEach(chip => {
+    chip.style.borderColor = 'var(--border)';
+    chip.style.background = 'transparent';
+    chip.style.color = 'var(--muted)';
+  });
+  localStorage.setItem('abbey_pg_filter', '');
+  updateFilterBar();
+  showStatus('settingsStatus', '✓ Filters cleared', true);
+  toast('Filters cleared — calling all phases');
+  renderHubChips();
+}
+
+function saveSettings() {
+  localStorage.setItem('abbey_webhook', document.getElementById('webhookUrl').value.trim());
+  localStorage.setItem('abbey_sgg_token', document.getElementById('sggToken').value.trim());
+  const slug = document.getElementById('tournamentSlug').value.trim();
+  if (slug) localStorage.setItem('abbey_tournament_slug', slug);
+  const event = document.getElementById('sggEvent').value.trim();
+  if (event) localStorage.setItem('abbey_sgg_event', event);
+  localStorage.setItem('abbey_auto_assign', document.getElementById('autoAssignToggle')?.checked ? '1' : '0');
+  localStorage.setItem('abbey_bypass_phase', '0');
+
+  const adqInput = document.getElementById('autoDqToggle');
+  if (adqInput) localStorage.setItem('abbey_auto_dq', adqInput.checked ? '1' : '0');
+
+  const dqTimer = document.getElementById('dqTimerInput');
+  if (dqTimer) {
+    const dqVal = parseFloat(dqTimer.value) || 5.5;
+    localStorage.setItem('abbey_dq_timer', String(dqVal));
+    DQ_MINUTES = dqVal;
+  }
+
+  const pgChecked = [...document.querySelectorAll('#phaseGroupCheckboxes button[data-pg-id]')].filter(b => b.style.color === 'var(--accent)' || b.style.background.includes('229')).map(b => b.dataset.pgId);
+  localStorage.setItem('abbey_pg_filter', pgChecked.join(','));
+  updateFilterBar();
+  showStatus('settingsStatus', '✓ Settings saved', true);
+}
+
+function loadSettings() {
+  const get = k => localStorage.getItem(k) || '';
+  document.getElementById('webhookUrl').value = get('abbey_webhook');
+  document.getElementById('sggToken').value = get('abbey_sgg_token');
+  document.getElementById('tournamentSlug').value = get('abbey_tournament_slug') || '';
+  document.getElementById('sggEvent').value = get('abbey_sgg_event');
+  const at = document.getElementById('autoAssignToggle');
+  if (at) at.checked = get('abbey_auto_assign') === '1';
+
+
+  const adq = document.getElementById('autoDqToggle');
+  if (adq) adq.checked = get('abbey_auto_dq') !== '0';
+
+  const savedDq = get('abbey_dq_timer');
+  if (savedDq) {
+    const dqInput = document.getElementById('dqTimerInput');
+    if (dqInput) dqInput.value = savedDq;
+    DQ_MINUTES = parseFloat(savedDq) || 5.5;
+  }
+
+  if (get('abbey_sgg_event')) {
+    document.getElementById('eventHint').textContent = `Event #${get('abbey_sgg_event')} loaded · Browse to change`;
+    document.getElementById('selectedEventField').style.display = 'block';
+    toggleSetup(true);
+    setTimeout(() => loadPhaseGroups(), 500);
+  }
+}
+
+function showStatus(id, msg, ok) {
+  document.getElementById(id).innerHTML = `<span class="badge ${ok ? 'badge-ok' : 'badge-err'}"><span class="dot"></span>${msg}</span>`;
+}
+
+function updateFilterBar() {
+  const bar = document.getElementById('activeFilterTags');
+  if (!bar) return;
+  const active = [...document.querySelectorAll('#phaseGroupCheckboxes button[data-pg-id]')].filter(b => b.style.color === 'var(--accent)' || b.style.background.includes('229'));
+  const hubStatus = document.getElementById('hubFilterStatus');
+  if (!active.length) {
+    bar.innerHTML = '<span style="color:var(--muted);">all phases</span>';
+    if (hubStatus) hubStatus.innerHTML = '<span style="color:var(--accent);">none</span>';
+    return;
+  }
+  bar.innerHTML = active.map(b => `<span style="background:rgba(0,229,160,0.15);color:var(--accent);border:1px solid rgba(0,229,160,0.3);border-radius:4px;padding:2px 8px;font-family:'Space Mono',monospace;font-size:0.7rem;white-space:nowrap;">${b.closest('div')?.querySelector('span')?.textContent?.trim() || ''} ${b.textContent}</span>`).join('');
+  if (hubStatus) hubStatus.textContent = active.map(b => (b.closest('div')?.querySelector('span')?.textContent?.trim() || '') + ' ' + b.textContent).join(', ');
+  renderHubChips();
+}
+
+// ─────────────────────────────────────────────────────────────
+// Tabs
+// ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  const tabs = ['manual', 'auto', 'hub'];
+  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', tabs[i] === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
+  if (name === 'hub' || name === 'manual') fetchManualSets();
+}
+
+// ─────────────────────────────────────────────────────────────
+// CSV
+// ─────────────────────────────────────────────────────────────
+let discordOverrides = {};
+try { discordOverrides = JSON.parse(localStorage.getItem('abbey_discord_overrides') || '{}'); } catch (e) { }
+
+function saveOverrides() {
+  localStorage.setItem('abbey_discord_overrides', JSON.stringify(discordOverrides));
+}
+
+function manualLink(tag) {
+  const input = document.getElementById('ml-' + tag);
+  const id = input?.value.trim().replace(/\D/g, '');
+  if (!id) { toast('Paste a numeric Discord user ID', true); return; }
+  discordOverrides[tag.toLowerCase()] = id;
+  saveOverrides();
+  // Also persist to the full discord map
+  try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); m[tag.toLowerCase()] = id; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { }
+  const p = tagMap.get(tag.toLowerCase());
+  if (p) p.discordId = id;
+  renderCsvStatus();
+  toast(`✓ Linked ${tag}`);
+}
+
+function renderCsvStatus() {
+  const missing = players.filter(p => !p.discordId);
+  const withDiscord = players.filter(p => p.discordId).length;
+  let html = `<span class="badge badge-ok"><span class="dot"></span>${players.length} players &middot; ${withDiscord} Discord-linked</span>`;
+  if (missing.length) {
+    html += `<div style="margin-top:8px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:7px;">`;
+    html += `<div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px;">No Discord linked (${missing.length})</div>`;
+    html += missing.map(p => `
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+        <span style="font-family:'Space Mono',monospace;font-size:0.75rem;color:var(--accent2);flex:0 0 auto;min-width:100px;overflow:hidden;text-overflow:ellipsis;">${p.tag}</span>
+        <input id="ml-${p.tag}" type="text" placeholder="Discord user ID" style="flex:1;font-size:0.72rem;padding:4px 7px;" autocomplete="off">
+        <button class="btn-sm" onclick="manualLink('${p.tag.replace(/'/g, "\\'")}')">Link</button>
+      </div>`).join('');
+    html += `</div>`;
+  }
+  document.getElementById('csvStatus').innerHTML = html;
+}
+
+function loadCSV(file) {
+  if (!file) return;
+  const slugMatch = file.name.match(/^attendeeList_(.+?)_\d{4}-\d{2}-\d{2}_/);
+  if (slugMatch) {
+    document.getElementById('tournamentSlug').value = slugMatch[1];
+    localStorage.setItem('abbey_tournament_slug', slugMatch[1]);
+  }
+  Papa.parse(file, {
+    header: true, skipEmptyLines: true,
+    complete(results) {
+      players = results.data.map(row => ({
+        tag: row['GamerTag']?.trim() || '',
+        shortTag: row['Short GamerTag']?.trim() || row['GamerTag']?.trim() || '',
+        discordId: row['Discord ID']?.trim() || '',
+      })).filter(p => p.tag);
+      tagMap.clear();
+
+      // Apply Discord ID overrides
+      for (const p of players) {
+        if (!p.discordId && discordOverrides[p.tag.toLowerCase()])
+          p.discordId = discordOverrides[p.tag.toLowerCase()];
+      }
+
+      // ─── Priority-aware tagMap population ───────────────────
+      // Bug fix: Previously, a player's stripped/short name could overwrite
+      // another player's full-tag entry (e.g. "TSM | Bob" stripped → "bob"
+      // would clobber the entry for player "Bob"), causing wrong Discord pings.
+
+      // Pass 1 (highest priority): full tags. Direct match always wins.
+      for (const p of players) {
+        tagMap.set(p.tag.toLowerCase(), p);
+      }
+
+      // Pass 2: normalized full tags (consistent pipe spacing)
+      for (const p of players) {
+        const normalized = p.tag.replace(/\s*\|\s*/g, ' | ').trim().toLowerCase();
+        if (!tagMap.has(normalized)) tagMap.set(normalized, p);
+      }
+
+      // Detect ambiguous short/stripped names (so we don't auto-link wrongly)
+      const shortCounts = new Map();
+      const strippedCounts = new Map();
+      for (const p of players) {
+        if (p.shortTag) {
+          const st = p.shortTag.toLowerCase();
+          if (st !== p.tag.toLowerCase()) shortCounts.set(st, (shortCounts.get(st) || 0) + 1);
+        }
+        const stripped = p.tag.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
+        if (stripped && stripped !== p.tag.toLowerCase()) {
+          strippedCounts.set(stripped, (strippedCounts.get(stripped) || 0) + 1);
+        }
+      }
+
+      // Pass 3: short tags — only if unambiguous AND key isn't already a full tag
+      for (const p of players) {
+        if (p.shortTag) {
+          const st = p.shortTag.toLowerCase();
+          if (!tagMap.has(st) && (shortCounts.get(st) || 0) <= 1) {
+            tagMap.set(st, p);
+          }
+        }
+      }
+
+      // Pass 4: stripped tags — only if unambiguous AND key isn't already a full tag
+      for (const p of players) {
+        const stripped = p.tag.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
+        if (stripped && !tagMap.has(stripped) && (strippedCounts.get(stripped) || 0) <= 1) {
+          tagMap.set(stripped, p);
+        }
+      }
+
+      // Save full discord map to localStorage so refresh doesn't wipe it
+      const discordMap = {};
+      for (const p of players) { if (p.discordId) discordMap[p.tag.toLowerCase()] = p.discordId; }
+      localStorage.setItem('abbey_discord_map', JSON.stringify(discordMap));
+      renderCsvStatus();
+    }
+  });
+}
+
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) loadCSV(f); });
+
+// ─────────────────────────────────────────────────────────────
+// API
+// ─────────────────────────────────────────────────────────────
+async function sggQuery(query) {
+  const token = document.getElementById('sggToken').value.trim();
+  if (!token) throw new Error('Enter your start.gg API token first');
+  const res = await fetch('https://api.start.gg/gql/alpha', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ query })
+  });
+  const data = await res.json();
+  if (data.errors) throw new Error(data.errors.map(e => e.message).join('; '));
+  return data;
+}
+
+async function browseEvents() {
+  const picker = document.getElementById('eventPicker');
+  const btn = document.getElementById('browseBtn');
+  const input = document.getElementById('tournamentSlug').value.trim() || localStorage.getItem('abbey_tournament_slug') || '';
+  if (picker.style.display !== 'none') { picker.style.display = 'none'; btn.textContent = 'Browse ▾'; return; }
+  if (!input) { showStatus('settingsStatus', '✗ Enter a tournament name or slug', false); return; }
+  btn.textContent = '⏳'; btn.disabled = true;
+  showStatus('settingsStatus', `Resolving "${input}"…`, true);
+  try {
+    let tournament = null;
+    const directData = await sggQuery(`query { tournament(slug: "${input}") { slug name events { id name } } }`);
+    tournament = directData?.data?.tournament;
+    if (!tournament) {
+      showStatus('settingsStatus', `Not a full slug — searching by name…`, true);
+      const searchData = await sggQuery(`query { tournaments(query: { filter: { name: "${input}" }, sortBy: "startAt desc", perPage: 5 }) { nodes { slug name startAt events { id name } } } }`);
+      const nodes = searchData?.data?.tournaments?.nodes || [];
+      if (!nodes.length) throw new Error(`No tournament found for "${input}"`);
+      tournament = nodes[0];
+      document.getElementById('tournamentSlug').value = tournament.slug;
+      localStorage.setItem('abbey_tournament_slug', tournament.slug);
+      showStatus('settingsStatus', `Resolved → ${tournament.slug}`, true);
+    }
+    const events = tournament.events || [];
+    const currentId = localStorage.getItem('abbey_sgg_event');
+    // Store event data for click handler, avoid inline quoting issues
+    picker._tournamentName = tournament.name;
+    picker._events = events;
+    const currentIdStr = String(currentId || '');
+    picker.innerHTML = `<div class="event-picker">
+      <div class="t-name">${tournament.name}</div>
+      ${events.map(e => `<div class="event-opt ${String(e.id) === currentIdStr ? 'selected' : ''}" data-event-id="${e.id}">
+        <span>${e.name}</span><span class="eid">#${e.id}</span>
+      </div>`).join('')}
+    </div>`;
+    picker.onclick = function (ev) {
+      const opt = ev.target.closest('[data-event-id]');
+      if (!opt) return;
+      selectEvent(opt.dataset.eventId, picker._events.find(e => String(e.id) === opt.dataset.eventId)?.name || '', picker._tournamentName);
+    };
+    picker.style.display = 'block'; btn.textContent = 'Browse ✕';
+    showStatus('settingsStatus', `${events.length} events — select one`, true);
+  } catch (e) {
+    showStatus('settingsStatus', `✗ ${e.message}`, false); btn.textContent = 'Browse ▾';
+  } finally { btn.disabled = false; }
+}
+
+
+function selectEvent(id, eventName, tournamentName) {
+  document.getElementById('sggEvent').value = String(id);
+  localStorage.setItem('abbey_sgg_event', String(id));
+  document.getElementById('eventPicker').style.display = 'none';
+  document.getElementById('browseBtn').textContent = 'Browse ▾';
+  document.getElementById('eventHint').textContent = `${tournamentName} › ${eventName} (#${id})`;
+  document.getElementById('selectedEventField').style.display = 'block';
+  saveSettings(); toggleSetup(true); toast('Event selected!');
+}
+
+async function loadPhaseGroups() {
+  const eventField = getEventField();
+  if (!eventField) { toast('Select an event first', true); return; }
+  const btn = $('loadPhasesBtn');
+  const status = $('pgLoadStatus');
+  btn.textContent = '⏳'; btn.disabled = true; status.textContent = '';
+  try {
+    const data = await sggQuery(`query { ${eventField} { phases { id name phaseOrder phaseGroups(query: { page: 1, perPage: 20 }) { nodes { id displayIdentifier state } } } } }`);
+    const phases = data?.data?.event?.phases || [];
+    const savedFilter = localStorage.getItem('abbey_pg_filter') || '';
+    const savedIds = savedFilter ? savedFilter.split(',').map(s => s.trim()) : [];
+    const container = document.getElementById('phaseGroupCheckboxes');
+    container.innerHTML = '';
+    for (const phase of phases.sort((a, b) => a.phaseOrder - b.phaseOrder)) {
+      const groups = phase.phaseGroups?.nodes || [];
+      if (!groups.length) continue;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;';
+      const label = document.createElement('span');
+      label.style.cssText = 'font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;min-width:54px;';
+      label.textContent = phase.name;
+      row.appendChild(label);
+      for (const pg of groups) {
+        const isChecked = savedIds.includes(String(pg.id));
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.dataset.pgId = String(pg.id);
+        chip.textContent = groups.length === 1 ? 'Pool 1' : `Pool ${pg.displayIdentifier}`;
+        chip.style.cssText = `padding:4px 12px;border-radius:20px;border:1px solid ${isChecked ? 'var(--accent)' : 'var(--border)'};background:${isChecked ? 'rgba(0,229,160,0.15)' : 'transparent'};color:${isChecked ? 'var(--accent)' : 'var(--muted)'};font-family:'Space Mono',monospace;font-size:0.72rem;cursor:pointer;transition:all 0.12s;`;
+        chip.onclick = function () {
+          const active = this.style.color === 'var(--accent)' || this.style.color.includes('229');
+          this.style.borderColor = active ? 'var(--border)' : 'var(--accent)';
+          this.style.background = active ? 'transparent' : 'rgba(0,229,160,0.15)';
+          this.style.color = active ? 'var(--muted)' : 'var(--accent)';
+          saveSettings();
+        };
+        row.appendChild(chip);
+      }
+      container.appendChild(row);
+    }
+    btn.textContent = '↻ Refresh';
+    updateFilterBar();
+    renderHubChips();
+    renderStreamPriorityPicker(phases);
+    renderPriorityStreamSelector();
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`; toast(`✗ ${e.message}`, true); btn.textContent = '↻ Load Phases';
+  } finally { btn.disabled = false; }
+}
+
+function resolvePlayer(entrantName) {
+  if (!entrantName) return null;
+  const lower = entrantName.toLowerCase().trim();
+  if (tagMap.has(lower)) return tagMap.get(lower);
+  // normalize spaces around pipe: 'NSB  |  KXT' -> 'nsb | kxt'
+  const normalized = lower.replace(/\s*\|\s*/g, ' | ');
+  if (tagMap.has(normalized)) return tagMap.get(normalized);
+  const stripped = entrantName.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
+  if (stripped && tagMap.has(stripped)) return tagMap.get(stripped);
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Webhook
+// ─────────────────────────────────────────────────────────────
+async function sendWebhook(content) {
+  const webhook = document.getElementById('webhookUrl').value.trim();
+  if (!webhook) return;
+  await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+}
+
+// ─────────────────────────────────────────────────────────────
+// Ping flair — varied messaging + 1/8192 shiny easter egg
+// ─────────────────────────────────────────────────────────────
+const PING_INTROS = [
+  '📢 SET CALLED!',
+  '🔔 You\'re up!',
+  '⚔️ Combatants, take your stage!',
+  '🎮 Showtime!',
+  '🚨 New match incoming',
+  '🎯 The bracket has spoken',
+  '⚡ Lock in — match called',
+  '🔥 Time to throw down',
+  '🎲 Your number\'s up',
+  '💥 Match ready',
+  '🥊 Gloves on, fingers warm',
+  '📣 Ladies and gentlemen…',
+];
+const PING_DIRECTIONS = [
+  '🚶 Head to the TO area upstairs to check in.',
+  '🪜 Up the stairs! Check in at the TO desk before you play.',
+  '🏃 Sprint to the TO area upstairs and check in.',
+  '⬆️ Get yourself up to the TO area for check-in, then play.',
+  '📍 TO area is upstairs — check in there before starting.',
+  '🚪 March on up to the TO area and check in.',
+];
+const PING_WARNINGS = [
+  '⚠️ Check in by <t:%t:t> (<t:%t:R>) or risk DQ',
+  '⏰ Be there by <t:%t:t> or you\'re getting auto-DQ\'d (<t:%t:R>)',
+  '⏳ Clock\'s ticking — <t:%t:t> is the deadline (<t:%t:R>)',
+  '🎲 Make it by <t:%t:t> or kiss the bracket goodbye (<t:%t:R>)',
+  '💀 No-show by <t:%t:t> = automatic L (<t:%t:R>)',
+  '🐌 Slow rolling? Check in by <t:%t:t> (<t:%t:R>) or get the boot',
+  '⌛ DQ clock starts now. Hit <t:%t:t> or hit the lobby (<t:%t:R>)',
+];
+const PING_STREAM_MOVE = [
+  '📺 You\'ve been promoted to STREAM',
+  '🎬 Lights, camera, action — moving to stream',
+  '🌟 Spotlight time! Heading to the stream',
+  '🎥 Get hype — your set is going to stream',
+  '✨ Stream calling! Drop what you\'re doing',
+  '🎙️ The cast is requesting your presence on stream',
+];
+
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+// 1 in 8192 — Pokémon shiny odds. Once a tournament if you're lucky. Maybe.
+function rollShiny() { return Math.floor(Math.random() * 8192) === 0; }
+
+// Builds a fully formed Discord message for a called match.
+// Returns { content, shiny } so callers can react to the rare event.
+function buildCallPing({ mA, mB, loc, roundText, dqTimestamp }) {
+  const shiny = rollShiny();
+  const intro = pick(PING_INTROS);
+  const direction = pick(PING_DIRECTIONS);
+  const warning = pick(PING_WARNINGS).replaceAll('%t', String(dqTimestamp));
+
+  if (shiny) {
+    // ✨ once-in-a-tournament shiny ping ✨
+    const content =
+      `✨🌟✨ **A SHINY MATCH APPEARED** ✨🌟✨\n` +
+      `*(1 in 8192 odds — congrats, you witnessed the rarest ping the matchcaller can produce)*\n\n` +
+      `${intro} ${mA} vs ${mB} — ${loc} *(${roundText})*\n` +
+      `${direction}\n` +
+      `${warning}\n` +
+      `🌈 *This set is now part of Abbey Tavern lore.*\n` +
+      `——————————————————`;
+    return { content, shiny: true };
+  }
+
+  const content =
+    `${intro} ${mA} vs ${mB} — ${loc} *(${roundText})*\n` +
+    `${direction}\n` +
+    `${warning}\n` +
+    `——————————————————`;
+  return { content, shiny: false };
+}
+
+function buildStreamMovePing({ mA, mB, streamLabel, roundText }) {
+  const shiny = rollShiny();
+  const intro = pick(PING_STREAM_MOVE);
+  if (shiny) {
+    return {
+      content:
+        `✨🌟✨ **A SHINY STREAM PROMOTION** ✨🌟✨\n` +
+        `*(1/8192 — extremely rare flex)*\n\n` +
+        `${intro}: ${mA} vs ${mB} — heading to **${streamLabel}** *(${roundText})*\n` +
+        `🎥 Get to the stream setup and get ready to play.\n` +
+        `🌈 *Today is your day.*\n` +
+        `——————————————————`,
+      shiny: true,
+    };
+  }
+  return {
+    content:
+      `${intro}: ${mA} vs ${mB} — heading to **${streamLabel}** *(${roundText})*\n` +
+      `🎥 Get to the stream setup and get ready to play.\n` +
+      `——————————————————`,
+    shiny: false,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Actions
+// ─────────────────────────────────────────────────────────────
+async function markInProgressQuick(setId, silent = false) {
+  try {
+    await sggQuery(`mutation { markSetInProgress(setId: "${setId}") { id state } }`);
+    if (!silent) toast('▶ Set in progress');
+    await fetchManualSets();
+  } catch (e) { if (!silent) toast(`✗ ${e.message}`, true); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Confirmation Modal
+// ─────────────────────────────────────────────────────────────
+// Shows a modal with custom buttons. Each button is { label, sublabel?, onClick, variant }.
+// variant: 'danger' | 'primary' | 'info' | undefined (neutral)
+function showConfirmModal({ title, message, buttons, variant = '' }) {
+  const card = document.getElementById('confirmModalCard');
+  card.classList.remove('danger', 'info', 'ok');
+  if (variant === 'danger') card.classList.add('danger');
+  else if (variant === 'info') card.classList.add('info');
+  else if (variant === 'ok') card.classList.add('ok');
+
+  document.getElementById('confirmModalTitle').textContent = title || '';
+  document.getElementById('confirmModalMessage').innerHTML = message || '';
+
+  const btnsContainer = document.getElementById('confirmModalBtns');
+  btnsContainer.innerHTML = '';
+  for (const btn of (buttons || [])) {
+    const el = document.createElement('button');
+    el.className = 'modal-btn' + (btn.variant ? ' ' + btn.variant : '');
+    el.innerHTML = `${btn.icon ? `<span class="mb-icon">${btn.icon}</span>` : ''}<div style="flex:1;min-width:0;">${btn.label}${btn.sublabel ? `<span class="mb-sub">${btn.sublabel}</span>` : ''}</div>`;
+    el.onclick = () => {
+      closeConfirmModal();
+      try { btn.onClick && btn.onClick(); } catch (e) { console.error(e); }
+    };
+    btnsContainer.appendChild(el);
+  }
+
+  document.getElementById('confirmModal').classList.add('show');
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirmModal').classList.remove('show');
+}
+
+// Close modal on backdrop click
+document.getElementById('confirmModal').addEventListener('click', e => {
+  if (e.target.id === 'confirmModal') closeConfirmModal();
+});
+// Close on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('confirmModal').classList.contains('show')) {
+    closeConfirmModal();
+  }
+});
+
+// ─── DQ Confirmation: opens modal instead of inline "Sure?" ───
+// Used by manual sets DQ buttons. winnerId/loserId already determined
+// (clicking DQ on player A means A loses, B wins).
+function requestDQ(setId, winnerId, loserId, winnerName, loserName) {
+  showConfirmModal({
+    title: '⚠️ Confirm DQ',
+    message: `DQ <strong>${loserName}</strong>? <strong>${winnerName}</strong> will advance.`,
+    variant: 'danger',
+    buttons: [
+      {
+        label: `Yes, DQ ${loserName}`,
+        sublabel: `${winnerName} advances`,
+        variant: 'danger',
+        icon: '🚫',
+        onClick: () => submitDQ(setId, winnerId, loserId, winnerName, false),
+      },
+    ],
+  });
+}
+
+// ─── Hub Timer-Expired: lets TO choose who to DQ when neither/one checked in ───
+function requestHubDQ(setId) {
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) || pendingSetsData.find(s => String(s.id) === String(setId));
+  if (!set) { toast('Set not found', true); return; }
+  const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
+  const nA = set.slots[0]?.entrant?.name || 'Player 1', nB = set.slots[1]?.entrant?.name || 'Player 2';
+  const hasA = hubCheckins.has(`${set.id}-${idA}`), hasB = hubCheckins.has(`${set.id}-${idB}`);
+
+  // Build button list — TO always gets to choose, no automatic seed-based pick.
+  const buttons = [
+    {
+      label: `DQ ${nA}`,
+      sublabel: hasA ? `${nA} IS checked in — confirm anyway?` : `${nA} not checked in · ${nB} advances`,
+      variant: 'danger',
+      icon: '🚫',
+      onClick: () => submitDQ(set.id, idB, idA, nB, false),
+    },
+    {
+      label: `DQ ${nB}`,
+      sublabel: hasB ? `${nB} IS checked in — confirm anyway?` : `${nB} not checked in · ${nA} advances`,
+      variant: 'danger',
+      icon: '🚫',
+      onClick: () => submitDQ(set.id, idA, idB, nA, false),
+    },
+  ];
+
+  // If both are checked in, offer to start the set instead of DQ'ing
+  if (hasA && hasB) {
+    buttons.push({
+      label: 'Start the set',
+      sublabel: 'Both players checked in',
+      variant: 'primary',
+      icon: '▶️',
+      onClick: () => markInProgressQuick(set.id),
+    });
+  }
+
+  let context = '';
+  if (!hasA && !hasB) context = '<strong style="color:var(--accent2)">Neither player checked in.</strong> Choose who to DQ.';
+  else if (!hasA) context = `<strong>${nA}</strong> is missing. <strong>${nB}</strong> is checked in.`;
+  else if (!hasB) context = `<strong>${nB}</strong> is missing. <strong>${nA}</strong> is checked in.`;
+  else context = 'Both players are checked in. You can DQ someone manually or start the set.';
+
+  showConfirmModal({
+    title: '⏱ Timer Expired',
+    message: context,
+    variant: 'danger',
+    buttons,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// Move to Stream — with confirmation modal
+// ─────────────────────────────────────────────────────────────
+async function moveToStream(setId, streamId, streamName) {
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) || allFetchedSets.find(s => String(s.id) === String(setId));
+  if (!set) { toast('Set not found', true); return; }
+
+  // Track the freed station (if any) so the venue dashboard can immediately
+  // show it as available
+  const previousStationId = set.station?.id;
+
+  try {
+    await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
+    // start.gg keeps the station assignment around when you assign a stream;
+    // we treat any set with both as "on stream, station free" via
+    // updateVenueDashboardUI's busy-id logic. Locally clear so the UI matches.
+    set.stream = { id: streamId, streamName: streamName };
+
+    // Lock the new stream so it doesn't double-book
+    recentlyAssignedLocs.set(String(streamId), Date.now());
+    // Free the previously locked station (if any)
+    if (previousStationId) recentlyAssignedLocs.delete(String(previousStationId));
+
+    const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+    const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+
+    const ping = buildStreamMovePing({ mA, mB, streamLabel: streamName, roundText: set.fullRoundText });
+    await sendWebhook(ping.content);
+
+    addPollLog(`${ping.shiny ? '✨ SHINY' : '📺'} Moved to stream: ${nA} vs ${nB} → 🎥 ${streamName}`, 'new');
+    toast(`📺 Moved to ${streamName}`);
+    if (ping.shiny) toast('✨ SHINY STREAM PROMOTION! 1/8192');
+
+    // Re-render everything that depends on stream/station state
+    fetchManualSets();
+  } catch (e) {
+    toast(`✗ Move to stream failed: ${e.message}`, true);
+    addPollLog(`⚠️ moveToStream(${setId} → ${streamId}) failed: ${e.message}`, 'err');
+  }
+}
+
+function requestMoveToStream(setId, streamId, streamName) {
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) || allFetchedSets.find(s => String(s.id) === String(setId));
+  if (!set) { toast('Set not found', true); return; }
+
+  const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+  const fromStation = set.station?.number ? `Station ${set.station.number}` : null;
+
+  showConfirmModal({
+    title: '📺 Move to Stream',
+    message: `Move <strong>${nA} vs ${nB}</strong> to <strong>${streamName}</strong>?` +
+      (fromStation ? `<br><br>This will free up <strong>${fromStation}</strong> and ping the players in Discord.`
+        : '<br><br>Players will be pinged in Discord with the new location.'),
+    variant: 'info',
+    buttons: [
+      {
+        label: `Yes — move to ${streamName}`,
+        sublabel: fromStation ? `Frees ${fromStation}` : 'Sends Discord ping',
+        variant: 'info',
+        icon: '🎥',
+        onClick: () => moveToStream(setId, streamId, streamName),
+      },
+    ],
+  });
+}
+
+// ─── Pull from stream: removes a set from a stream slot (sends back to station) ───
+async function pullFromStream(setId) {
+  const set = activeSetsData.find(s => String(s.id) === String(setId));
+  if (!set) { toast('Set not found', true); return; }
+  const streamName = set.stream?.streamName || 'stream';
+
+  showConfirmModal({
+    title: '⏏ Remove from Stream',
+    message: `Pull <strong>${set.slots[0]?.entrant?.name || '?'} vs ${set.slots[1]?.entrant?.name || '?'}</strong> off <strong>${streamName}</strong>?<br><br>The set will return to its original station${set.station?.number ? ` (<strong>Station ${set.station.number}</strong>)` : ''}.`,
+    variant: 'danger',
+    buttons: [
+      {
+        label: `Yes — pull from ${streamName}`,
+        variant: 'danger',
+        icon: '⏏',
+        onClick: async () => {
+          try {
+            // Re-assign to the original station to clear the stream.
+            // start.gg's API doesn't have a clean unassign; the cleanest
+            // approach is to re-call assignStation, which moves it back.
+            if (set.station?.id) {
+              await sggQuery(`mutation { assignStation(setId: "${setId}", stationId: "${set.station.id}") { id } }`);
+              recentlyAssignedLocs.set(String(set.station.id), Date.now());
+            }
+            // Locally clear stream
+            const oldStreamId = set.stream?.id;
+            set.stream = null;
+            if (oldStreamId) recentlyAssignedLocs.delete(String(oldStreamId));
+            toast('⏏ Pulled from stream');
+            addPollLog(`⏏ Pulled set ${setId} from stream`, 'new');
+            fetchManualSets();
+          } catch (e) {
+            toast(`✗ ${e.message}`, true);
+          }
+        },
+      },
+    ],
+  });
+}
+
+async function submitDQ(setId, winnerId, loserId, winnerName, auto = false) {
+  if (completedSetIds.has(String(setId))) return;
+  completedSetIds.add(String(setId));
+  try {
+    await sggQuery(`mutation DQSet { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", isDQ: true) { id state } }`);
+    announcedSetIds.delete(String(setId));
+    hubCheckins.delete(`${setId}-${winnerId}`); hubCheckins.delete(`${setId}-${loserId}`); saveCheckins();
+    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    const entry = matchLog.find(e => e.setId === setId);
+    if (entry) { entry.completed = true; renderLog(); }
+    addPollLog(auto ? `⚡ AUTO-DQ — ${winnerName} advances` : `✓ DQ — ${winnerName} wins`, 'err');
+    toast(`✓ DQ: ${winnerName} wins`);
+    await fetchManualSets();
+  } catch (e) { completedSetIds.delete(String(setId)); toast(`✗ DQ failed: ${e.message}`, true); }
+}
+
+async function reportFullScore(setId, idA, idB, nameA, nameB, prefix = "") {
+  const scoreA = parseInt(document.getElementById(`${prefix}scoreA-${setId}`).value) || 0;
+  const scoreB = parseInt(document.getElementById(`${prefix}scoreB-${setId}`).value) || 0;
+  if (scoreA === scoreB) { toast("Scores cannot be tied", true); return; }
+  const winnerId = scoreA > scoreB ? idA : idB;
+  const winnerName = scoreA > scoreB ? nameA : nameB;
+  let gameData = [], g = 1;
+  for (let i = 0; i < scoreA; i++) gameData.push(`{winnerId: "${idA}", gameNum: ${g++}}`);
+  for (let i = 0; i < scoreB; i++) gameData.push(`{winnerId: "${idB}", gameNum: ${g++}}`);
+  try {
+    await sggQuery(`mutation { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", gameData: [${gameData.join(',')}]) { id state } }`);
+    toast(`🏆 Reported: ${winnerName} wins!`);
+    completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
+    hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
+    // Remove immediately from stable slot list so card stays blank until next poll clears it
+    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    const entry = matchLog.find(e => e.setId === setId);
+    if (entry) { entry.completed = true; renderLog(); }
+    fetchManualSets();
+  } catch (e) { toast(`✗ ${e.message}`, true); }
+}
+
+async function enforceAutoDQManual(setId) {
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) || pendingSetsData.find(s => String(s.id) === String(setId));
+  if (!set) return;
+  const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
+  const nA = set.slots[0]?.entrant?.name || 'Player 1', nB = set.slots[1]?.entrant?.name || 'Player 2';
+  const seedA = set.slots[0]?.seed?.seedNum || 9999, seedB = set.slots[1]?.seed?.seedNum || 9999;
+  const hasA = hubCheckins.has(`${set.id}-${idA}`), hasB = hubCheckins.has(`${set.id}-${idB}`);
+  let winId, loseId, winName;
+  if (!hasA && !hasB) {
+    if (seedA > seedB) { winId = idB; loseId = idA; winName = nB; }
+    else { winId = idA; loseId = idB; winName = nA; }
+  } else if (!hasA) { winId = idB; loseId = idA; winName = nB; }
+  else { winId = idA; loseId = idB; winName = nA; }
+
+  await submitDQ(set.id, winId, loseId, winName, false);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Poll log + venue dashboard
+// ─────────────────────────────────────────────────────────────
+function addPollLog(msg, type = '') {
+  const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  pollLogEntries.unshift({ time, msg, type });
+  if (pollLogEntries.length > 40) pollLogEntries.pop();
+  const el = document.getElementById('pollLog');
+  if (el) el.innerHTML = pollLogEntries.map(e => `<div class="entry ${e.type}">[${e.time}] ${e.msg}</div>`).join('');
+}
+
+function copyPollLog() {
+  const text = pollLogEntries.map(e => `[${e.time}] ${e.msg}`).join('\n');
+  navigator.clipboard.writeText(text).then(() => toast('Log copied to clipboard!'));
+}
+
+function updateVenueDashboardUI(allSets) {
+  const allLocs = [
+    ...stationList.map(s => ({ id: s.id, type: 'station', label: `Station ${s.number}`, sortIdx: s.number })),
+    ...streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
+  ];
+  const activeSets = allSets.filter(s => (s.state === 2 || s.state === 6) && (s.station || s.stream));
+
+  // KEY RULE: If a set has BOTH a station and a stream, treat it as on-stream
+  // and consider the station FREE. This is how "move to stream" frees up
+  // the station even though start.gg keeps the station assignment around.
+  const busyIds = new Set();
+  for (const s of activeSets) {
+    if (s.stream?.id) {
+      busyIds.add(String(s.stream.id));
+      // intentionally do not add s.station.id — promoting to stream frees the station
+    } else if (s.station?.id) {
+      busyIds.add(String(s.station.id));
+    }
+  }
+
+  // Shield recently assigned locations from being double-booked by stale API responses
+  const now = Date.now();
+  for (const [locId, timestamp] of recentlyAssignedLocs.entries()) {
+    if (now - timestamp < 180000) { // 3 minutes protection
+      busyIds.add(String(locId));
+    } else {
+      recentlyAssignedLocs.delete(locId); // cleanup old locks
+    }
+  }
+
+  const freeLocs = allLocs.filter(loc => !busyIds.has(String(loc.id))).sort((a, b) => a.sortIdx - b.sortIdx);
+
+  const activeListEl = document.getElementById('vActiveList');
+  if (activeListEl) activeListEl.innerHTML = activeSets.length ? activeSets.map(s => {
+    // When both are set, label as the stream (the station has been freed)
+    const onStream = !!s.stream?.id;
+    const locLabel = onStream
+      ? `🎥 ${s.stream.streamName}`
+      : (s.station?.number ? `Station ${s.station.number}` : '');
+    return `<div class="v-match"><span class="stn-num" style="${onStream ? 'color:var(--blue)' : ''}">${locLabel}</span> ${s.slots[0]?.entrant?.name || '?'} vs ${s.slots[1]?.entrant?.name || '?'}</div>`;
+  }).join('') : '<div style="font-size:0.75rem;color:var(--muted)">No sets currently assigned</div>';
+  const freeListEl = document.getElementById('vFreeList');
+  if (freeListEl) freeListEl.innerHTML = freeLocs.length ? freeLocs.map(loc => `<span class="stn-pill" style="${loc.type === 'stream' ? 'border-color:var(--blue);color:var(--blue)' : ''}">${loc.label}</span>`).join('') : '<div style="font-size:0.75rem;color:var(--accent2)">All locations are occupied</div>';
+
+  return { activeSets, freeLocs };
+}
+
+function getStreamScore(set) {
+  const sA = set.slots[0]?.seed?.seedNum, sB = set.slots[1]?.seed?.seedNum;
+  if (!sA || !sB) return 9999;
+  return Math.abs(sA - sB) + ((sA + sB) * 0.1);
+}
+
+function streamGrade(score) {
+  if (!score || score >= 9999) return '';
+  if (score <= 3) return '<span style="color:#00e5a0;font-weight:700;">A+</span>';
+  if (score <= 6) return '<span style="color:#00e5a0;font-weight:700;">A</span>';
+  if (score <= 10) return '<span style="color:#4fd8a0;font-weight:700;">A-</span>';
+  if (score <= 15) return '<span style="color:#a0d070;font-weight:700;">B+</span>';
+  if (score <= 22) return '<span style="color:#d4c040;font-weight:700;">B</span>';
+  if (score <= 30) return '<span style="color:#e09030;font-weight:700;">B-</span>';
+  if (score <= 50) return '<span style="color:#e06030;font-weight:700;">C</span>';
+  return '<span style="color:#ff4f6d;font-weight:700;">D</span>';
+}
+
+// Winners side sets in user-selected stream-priority phases are held for stream only
+async function fetchAndPopulateStreams() {
+  const eventField = getEventField();
+  if (!eventField) { toast('Select an event first', true); return; }
+  try {
+    const data = await sggQuery(`query { ${eventField} { tournament { streams { id streamName } } } }`);
+    streamList = data?.data?.event?.tournament?.streams || [];
+    renderPriorityStreamSelector();
+    toast(`✓ ${streamList.length} streams loaded`);
+  } catch (e) { toast(`✗ ${e.message}`, true); }
+}
+
+function savePriorityStream() {
+  const val = document.getElementById('priorityStreamId')?.value || '';
+  localStorage.setItem('abbey_priority_stream_id', val);
+}
+
+function getPriorityStreamId() {
+  return localStorage.getItem('abbey_priority_stream_id') || '';
+}
+
+function renderPriorityStreamSelector() {
+  const sel = document.getElementById('priorityStreamId');
+  if (!sel || !streamList.length) return;
+  const saved = getPriorityStreamId();
+  sel.innerHTML = '<option value="">Any available stream</option>';
+  for (const s of streamList) {
+    const opt = document.createElement('option');
+    opt.value = String(s.id);
+    opt.textContent = s.streamName;
+    opt.selected = String(s.id) === saved;
+    sel.appendChild(opt);
+  }
+}
+
+function getPhaseTiers() {
+  try { return JSON.parse(localStorage.getItem('abbey_phase_tiers') || '{}'); } catch (e) { return {}; }
+}
+function setPhaseTier(phaseId, tier) {
+  const tiers = getPhaseTiers();
+  if (tier) tiers[phaseId] = tier; else delete tiers[phaseId];
+  localStorage.setItem('abbey_phase_tiers', JSON.stringify(tiers));
+  // Keep legacy abbey_stream_priority_phases in sync for isStreamPriority checks
+  const ids = Object.keys(tiers);
+  localStorage.setItem('abbey_stream_priority_phases', JSON.stringify(ids));
+}
+
+function renderStreamPriorityPicker(phases) {
+  const container = document.getElementById('streamPriorityPhases');
+  if (!container) return;
+  const tiers = getPhaseTiers();
+  container.innerHTML = '';
+  for (const phase of phases.sort((a, b) => a.phaseOrder - b.phaseOrder)) {
+    const id = String(phase.id);
+    const current = tiers[id] || null;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;';
+    const label = document.createElement('span');
+    label.style.cssText = 'font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;min-width:54px;';
+    label.textContent = phase.name;
+    row.appendChild(label);
+    [['stream-preferred', 'Top 8', 'var(--blue)', 'rgba(114,137,218,0.15)'],
+    ['winners-main', 'Top 24', '#a78bfa', 'rgba(167,139,250,0.12)']].forEach(([tier, label2, col, bg]) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = label2;
+      const active = current === tier;
+      chip.style.cssText = `padding:4px 12px;border-radius:20px;border:1px solid ${active ? col : 'var(--border)'};background:${active ? bg : 'transparent'};color:${active ? col : 'var(--muted)'};font-family:'Space Mono',monospace;font-size:0.72rem;cursor:pointer;transition:all 0.12s;`;
+      chip.onclick = function () {
+        const t = getPhaseTiers();
+        const newTier = t[id] === tier ? null : tier;
+        setPhaseTier(id, newTier);
+        renderStreamPriorityPicker(phases);
+      };
+      row.appendChild(chip);
+    });
+    container.appendChild(row);
+  }
+}
+
+function getStreamPriorityPhaseIds() {
+  try { return JSON.parse(localStorage.getItem('abbey_stream_priority_phases') || '[]'); } catch (e) { return []; }
+}
+// Returns stream tier for a set:
+// 'main-only'        — Winners Top8, Losers Finals, Grand Finals
+// 'stream-preferred' — other Losers sets in stream-priority phases
+// 'normal'           — everything else
+function getSetStreamTier(set) {
+  const phaseId = String(set.phaseGroup?.phase?.id ?? '');
+  const tiers = getPhaseTiers();
+  const phaseTier = tiers[phaseId];
+  if (!phaseTier) return 'normal';
+  const round = (set.fullRoundText || '').toLowerCase();
+  const isWinners = round.includes('winners') || round.includes('grand final');
+  if (phaseTier === 'stream-preferred') {
+    // Winners → main only; Losers → main first, sidestream fallback
+    return isWinners ? 'main-only' : 'stream-preferred';
+  }
+  if (phaseTier === 'winners-main') {
+    // Winners → main only; Losers → normal (stations/any stream)
+    return isWinners ? 'main-only' : 'normal';
+  }
+  return 'normal';
+}
+function isStreamPriority(set) { return getSetStreamTier(set) !== 'normal'; }
+
+async function enforceAutoDQ(set) {
+  if (completedSetIds.has(String(set.id))) return;
+  const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
+  const nA = set.slots[0]?.entrant?.name || 'Player 1', nB = set.slots[1]?.entrant?.name || 'Player 2';
+  const seedA = set.slots[0]?.seed?.seedNum || 9999, seedB = set.slots[1]?.seed?.seedNum || 9999;
+  const hasA = hubCheckins.has(`${set.id}-${idA}`), hasB = hubCheckins.has(`${set.id}-${idB}`);
+  if (hasA && hasB) { await markInProgressQuick(set.id, true); return; }
+  if (!hasA && !hasB) { (seedA > seedB) ? await submitDQ(set.id, idB, idA, nB, true) : await submitDQ(set.id, idA, idB, nA, true); }
+  else if (!hasA) { await submitDQ(set.id, idB, idA, nB, true); }
+  else { await submitDQ(set.id, idA, idB, nA, true); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Poll
+// ─────────────────────────────────────────────────────────────
+async function doPoll() {
+  addPollLog('Checking start.gg…');
+  const eventField = getEventField();
+  if (!eventField) return;
+
+  try {
+    const [setData, venueData] = await Promise.all([
+      sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query PollVenue { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } streams { id streamName } } } }`).catch(() => null)
+    ]);
+
+    const allSets = setData?.data?.event?.sets?.nodes || [];
+    if (venueData) {
+      stationList = venueData.data.event.tournament.stations.nodes || [];
+      streamList = venueData.data.event.tournament.streams || [];
+    }
+
+    const { freeLocs } = updateVenueDashboardUI(allSets);
+    let availableStations = freeLocs.filter(l => l.type === 'station').sort((a, b) => a.sortIdx - b.sortIdx);
+
+    allFetchedSets = allSets;
+    activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
+    pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
+
+    const autoOn = document.getElementById('autoAssignToggle')?.checked;
+    const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
+    const lowestPhase = getLowestIncompletePhase();
+    const lockedPending = pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
+    addPollLog(`📊 auto:${autoOn ? "ON" : "OFF"} | bypassPhase:${bypassPhase ? "ON" : "OFF"} | total:${allSets.length} | pending:${pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${stationList.length} str:${streamList.length}) | active:${activeSetsData.length}`);
+
+    // 1. EXTERNAL CALL DETECTOR — process externally-called sets before auto-assigning
+    const calledSets = allSets.filter(s => s.state === 6);
+    let pingCount = 0;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const autoDqOn = document.getElementById('autoDqToggle')?.checked !== false;
+
+    for (const set of calledSets) {
+      if (completedSetIds.has(String(set.id))) continue;
+
+      // Automatically assign a station if it was called externally without one.
+      // NOTE: Only stations — never streams. Streams are handled manually via
+      // the Stream Queue in the Player Hub.
+      if (!set.station && !set.stream && availableStations.length > 0) {
+        const locToAssign = availableStations.shift();
+        try {
+          await sggQuery(`mutation { assignStation(setId: "${set.id}", stationId: "${locToAssign.id}") { id } }`);
+          set.station = { id: locToAssign.id, number: locToAssign.sortIdx };
+          recentlyAssignedLocs.set(String(locToAssign.id), Date.now());
+        } catch (e) {
+          addPollLog(`⚠️ Failed to auto-fix missing station for ${set.id}: ${e.message}`, 'err');
+        }
+      }
+
+      if (!announcedSetIds.has(String(set.id))) {
+        announcedSetIds.add(String(set.id));
+        const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+        const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+        const loc = set.station?.number ? `Station ${set.station.number}` : set.stream?.streamName ? `🎥 ${set.stream.streamName}` : '';
+        const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+        const ping = buildCallPing({ mA, mB, loc: loc || 'NO STATION', roundText: set.fullRoundText, dqTimestamp: dTs });
+        await sendWebhook(ping.content);
+        logMatch(nA, nB, loc || 'No Station', 'auto', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum, ping.shiny);
+        addPollLog(`${ping.shiny ? '✨ SHINY' : '✓'} Ext. Call Detected: ${nA} vs ${nB}${loc ? ' → ' + loc : ' (no station)'}`, 'new');
+        if (ping.shiny) toast('✨ SHINY PING! 1/8192 — go check Discord');
+        pingCount++;
+      }
+
+      const callTime = set.updatedAt || set.createdAt || nowSec;
+      if ((nowSec - callTime) / 60 >= DQ_MINUTES && autoDqOn) {
+        await enforceAutoDQ(set);
+      }
+    }
+
+    // 2. AUTO-ASSIGN — STATIONS ONLY. Streams are filled manually via the
+    // Stream Queue in the Player Hub. Auto-assign never picks streams now.
+    if (autoOn && pendingSetsData.length > 0 && availableStations.length > 0) {
+      const lowestIncompletePhase = getLowestIncompletePhase();
+
+      let pending = [...pendingSetsData];
+
+      // Phase group filter
+      const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
+      const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      if (pgAllowed.length > 0) {
+        // Pool filter active: restrict to selected pools AND strict phase lock
+        pending = pending.filter(s => pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed)));
+        pending = pending.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestIncompletePhase);
+      } else {
+        // No pool filter: sort by phase order so lower phases are always called first,
+        // but later phases (Top 24 etc.) can fill any remaining free stations
+        pending.sort((a, b) => (a.phaseGroup?.phase?.phaseOrder ?? 999) - (b.phaseGroup?.phase?.phaseOrder ?? 999));
+      }
+
+      const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (pendingSetsData[0] ? String(pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
+      addPollLog(`🔍 after-filters:${pending.length} | pgFilter:[${pgAllowed.join(',')}] | sample pgId:${samplePgId} | stns:${availableStations.length} (streams: manual queue)`);
+
+      // Stream-priority sets (main-only, stream-preferred) are NEVER auto-assigned
+      // to a station — they wait in the stream queue for a human to pick them.
+      const stationEligible = pending.filter(s => getSetStreamTier(s) === 'normal');
+
+      // Sort: phase order (lower first), then oldest first
+      stationEligible.sort((a, b) => {
+        const pA = a.phaseGroup?.phase?.phaseOrder ?? 999, pB = b.phaseGroup?.phase?.phaseOrder ?? 999;
+        if (pA !== pB) return pA - pB;
+        return (a.updatedAt || a.createdAt || 0) - (b.updatedAt || b.createdAt || 0);
+      });
+
+      const assignments = [];
+      const n = Math.min(stationEligible.length, availableStations.length);
+      for (let i = 0; i < n; i++) {
+        assignments.push({ loc: availableStations.shift(), set: stationEligible.shift() });
+      }
+
+      for (const { loc, set: ps } of assignments) {
+        try {
+          // FIX: Mark set as called FIRST, and capture the new ID if it was a preview set
+          let targetId = ps.id;
+          const callRes = await sggQuery(`mutation { markSetCalled(setId: "${targetId}") { id } }`);
+
+          // Start.gg might have converted a "preview_" ID into a real numeric ID
+          if (callRes?.data?.markSetCalled?.id) {
+            targetId = callRes.data.markSetCalled.id;
+          }
+          // THEN assign the station using the updated ID
+          // Lock location and announce set immediately to prevent double-calls
+          recentlyAssignedLocs.set(String(loc.id), Date.now());
+          announcedSetIds.add(String(ps.id));
+          announcedSetIds.add(String(targetId));
+
+          let assignOk = false;
+          try {
+            await sggQuery(`mutation { assignStation(setId: "${targetId}", stationId: "${loc.id}") { id } }`);
+            assignOk = true;
+          } catch (assignErr) { addPollLog(`⚠️ assign failed for ${targetId}: ${assignErr.message}`, 'err'); }
+
+          if (!assignOk) throw new Error(`Assignment failed for ${targetId}`);
+
+          // Inject into local active state so it appears in the Active Matches hub instantly!
+          ps.id = targetId;
+          ps.state = 6;
+          ps.updatedAt = Math.floor(Date.now() / 1000);
+          ps.station = { id: loc.id, number: loc.sortIdx };
+          if (!activeSetsData.some(s => String(s.id) === String(targetId))) activeSetsData.push(ps);
+
+          // announcedSetIds already set above before assignment
+
+          const nA = ps.slots[0]?.entrant?.name || '???', nB = ps.slots[1]?.entrant?.name || '???';
+          const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+          const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+          const ping = buildCallPing({ mA, mB, loc: loc.label, roundText: ps.fullRoundText, dqTimestamp: dTs });
+          await sendWebhook(ping.content);
+          logMatch(nA, nB, loc.label, 'auto', targetId, ps.slots[0]?.seed?.seedNum, ps.slots[1]?.seed?.seedNum, ping.shiny);
+          addPollLog(`${ping.shiny ? '✨ SHINY' : '⚡'} Auto-assigned & Pinged: ${nA} vs ${nB} to ${loc.label}`, 'new');
+          if (ping.shiny) toast('✨ SHINY PING! 1/8192 — go check Discord');
+        } catch (err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); completedSetIds.delete(String(ps.id)); }
+      }
+    }
+
+
+    if (pingCount === 0) document.getElementById('autoMeta').textContent = `Last poll: ${new Date().toLocaleTimeString()} · ${calledSets.length} sets active`;
+    if (!document.querySelector('#activeSetList input:focus')) renderManualSets();
+    if (!document.querySelector('#tab-hub input:focus')) renderPlayerHub();
+
+  } catch (e) {
+    addPollLog(`Error: ${e.message}`, 'err');
+    document.getElementById('autoMeta').textContent = `Error at ${new Date().toLocaleTimeString()}: ${e.message}`;
+  }
+}
+
+async function startPolling() {
+  const interval = parseInt(document.getElementById('pollInterval').value);
+  if (pollTimer) clearInterval(pollTimer);
+  document.getElementById('startPollBtn').disabled = true;
+  document.getElementById('stopPollBtn').disabled = false;
+  document.getElementById('autoStatus').textContent = 'Watching';
+  document.getElementById('autoBadge').style.display = 'inline-flex';
+  document.getElementById('autoMeta').textContent = 'Watching for sets called on any device…';
+  document.getElementById('manualAutoBar').style.display = 'flex';
+
+  // Apply the same filters as auto-assign before forcing a start.gg call
+  let validPending = pendingSetsData || [];
+
+  const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
+  const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  if (pgAllowed.length > 0) {
+    validPending = validPending.filter(s => pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed)));
+  }
+
+  const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
+  if (!bypassPhase && allFetchedSets.length > 0) {
+    const lowestIncompletePhase = getLowestIncompletePhase();
+    validPending = validPending.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestIncompletePhase);
+  }
+
+  // Sort oldest first just like auto-assign
+  validPending.sort((a, b) => (a.updatedAt || a.createdAt || 0) - (b.updatedAt || b.createdAt || 0));
+
+  if (validPending.length > 0) {
+    try {
+      addPollLog(`⚡ Forcing start.gg call on first pending set: ${validPending[0].id}...`);
+      await sggQuery(`mutation { markSetCalled(setId: "${validPending[0].id}") { id } }`);
+    } catch (e) {
+      addPollLog(`⚠️ Force call failed: ${e.message}`, 'err');
+    }
+  }
+
+  doPoll();
+  pollTimer = setInterval(doPoll, interval);
+  addPollLog(`Auto watch started (every ${interval / 1000}s)`, 'new');
+  updateHubWatchBtn();
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  document.getElementById('startPollBtn').disabled = false;
+  document.getElementById('stopPollBtn').disabled = true;
+  document.getElementById('autoStatus').textContent = 'Stopped';
+  document.getElementById('autoBadge').style.display = 'none';
+  document.getElementById('autoMeta').textContent = 'Stopped';
+  document.getElementById('manualAutoBar').style.display = 'none';
+  addPollLog('Auto watch stopped');
+  updateHubWatchBtn();
+}
+
+// ─────────────────────────────────────────────────────────────
+// Manual Sets
+// ─────────────────────────────────────────────────────────────
+function formatWait(createdAt) {
+  const mins = Math.floor((Date.now() / 1000 - createdAt) / 60);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60), rem = mins % 60;
+  return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
+}
+
+async function fetchManualSets() {
+  const eventField = getEventField();
+  if (!eventField) { toast('No event selected', true); return; }
+  const btn = $('fetchSetsBtn');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  try {
+    const [setData, stationData, streamData] = await Promise.all([
+      sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } } } }`).catch(() => null),
+      sggQuery(`query { ${eventField} { tournament { streams { id streamName } } } }`).catch(() => null)
+    ]);
+    const allSets = setData?.data?.event?.sets?.nodes || [];
+    allFetchedSets = allSets.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
+    pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
+    if (stationData) stationList = stationData.data.event.tournament.stations.nodes.sort((a, b) => a.number - b.number);
+    if (streamData) streamList = streamData.data.event.tournament.streams || [];
+    renderManualSets(); renderPlayerHub(); updateVenueDashboardUI(allSets);
+    if (btn) btn.textContent = 'Fetch ↓';
+  } catch (e) {
+    toast(`✗ ${e.message}`, true); if (btn) btn.textContent = 'Fetch ↓';
+  } finally { if (btn) btn.disabled = false; }
+}
+
+function renderManualSets() {
+  const el = document.getElementById('manualSetList');
+  if (!el) return;
+  const selectedStates = (document.getElementById('setFetchState')?.value || '1,2,6').split(',').map(Number);
+  // Sort by bracket stage (phaseOrder ascending) then by duration (oldest first)
+  // For state 6 (called) and state 2 (in progress), use updatedAt as the call/start time
+  // For state 1 (pending), use createdAt
+  const toRender = allFetchedSets
+    .filter(s => selectedStates.includes(s.state))
+    .slice()
+    .sort((a, b) => {
+      const pA = a.phaseGroup?.phase?.phaseOrder ?? 999;
+      const pB = b.phaseGroup?.phase?.phaseOrder ?? 999;
+      if (pA !== pB) return pA - pB;
+      const tA = (a.state === 6 || a.state === 2) ? (a.updatedAt || a.createdAt || 0) : (a.createdAt || 0);
+      const tB = (b.state === 6 || b.state === 2) ? (b.updatedAt || b.createdAt || 0) : (b.createdAt || 0);
+      return tA - tB; // oldest first → longest waiting/playing surfaces at top
+    });
+  if (!toRender.length) { el.innerHTML = '<div class="sets-empty">No sets match the current filter.</div>'; return; }
+  el.innerHTML = toRender.map(set => {
+    const a = set.slots[0]?.entrant, b = set.slots[1]?.entrant;
+    const nameA = a?.name || '???', nameB = b?.name || '???';
+    const ciA = hubCheckins.has(`${set.id}-${a?.id}`), ciB = hubCheckins.has(`${set.id}-${b?.id}`);
+    // Prefer stream label when both are set (stream wins; station is freed)
+    const onStream = !!set.stream?.streamName;
+    const loc = onStream ? `🎥 ${set.stream.streamName}` : (set.station?.number ? `Station ${set.station.number}` : '');
+    const isState6 = set.state === 6, isState2 = set.state === 2;
+    const waitLabel = set.createdAt ? formatWait(set.createdAt) : '';
+    let badgeHtml = '';
+    if (isState2) badgeHtml = `<span class="set-called-badge" style="background:rgba(0,229,160,0.2);color:var(--accent);">▶ In Progress</span>`;
+    else if (isState6) { const ct = set.updatedAt || set.createdAt || Math.floor(Date.now() / 1000); badgeHtml = `<span class="set-called-badge" style="background:var(--accent2);color:#fff;">⏱ <span class="dq-timer-display" data-time="${ct}">0:00</span></span>`; }
+    return `<div class="set-card" id="setcard-${set.id}" style="${isState6 ? 'border-left:3px solid var(--accent2);' : isState2 ? 'border-left:3px solid var(--accent);' : ''}">
+      <div class="set-header">
+        <span class="set-round">${set.fullRoundText || 'Set'}</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${waitLabel ? `<span style="font-family:'Space Mono',monospace;font-size:0.68rem;color:var(--muted);">${waitLabel}</span>` : ''}
+          ${loc ? `<span class="set-station-badge"${onStream ? ' style="background:rgba(114,137,218,0.15);color:var(--blue);"' : ''}>${loc}</span>` : ''}
+          ${badgeHtml}
+        </div>
+      </div>
+      <div class="set-player-row">
+        <span class="checkin-dot ${ciA ? 'yes' : 'no'}" onclick="toggleHubCheckin('${set.id}','${a?.id}','${nameA.replace(/'/g, "\\'")}')"></span>
+        <span class="set-player-name">${nameA}</span>
+        <div class="set-player-actions"><button class="act-btn dq" onclick="requestDQ('${set.id}', '${b?.id}', '${a?.id}', '${nameB.replace(/'/g, "\\'")}', '${nameA.replace(/'/g, "\\'")}')">DQ</button></div>
+      </div>
+      <div class="set-player-row">
+        <span class="checkin-dot ${ciB ? 'yes' : 'no'}" onclick="toggleHubCheckin('${set.id}','${b?.id}','${nameB.replace(/'/g, "\\'")}')"></span>
+        <span class="set-player-name">${nameB}</span>
+        <div class="set-player-actions"><button class="act-btn dq" onclick="requestDQ('${set.id}', '${a?.id}', '${b?.id}', '${nameA.replace(/'/g, "\\'")}', '${nameB.replace(/'/g, "\\'")}')">DQ</button></div>
+      </div>
+      <div class="set-footer">
+        <select id="stn-${set.id}" style="flex:1;font-size:0.78rem;">
+          <option value="">No assignment</option>
+          ${stationList.length ? `<optgroup label="Stations">${stationList.map(s => `<option value="station:${s.id}" data-num="${s.number}" ${set.station?.number == s.number ? 'selected' : ''}>Station ${s.number}</option>`).join('')}</optgroup>` : ''}
+          ${streamList.length ? `<optgroup label="Streams">${streamList.map(s => `<option value="stream:${s.id}" data-name="${s.streamName}" ${set.stream?.id == s.id ? 'selected' : ''}>🎥 ${s.streamName}</option>`).join('')}</optgroup>` : ''}
+        </select>
+        <button class="set-call-btn" onclick="callSetFromPanel('${set.id}')">📢 Call</button>
+      </div>
+    </div>`;
+  }).join('');
+  updateTimerCache();
+}
+
+async function callSetFromPanel(setId) {
+  const set = allFetchedSets.find(s => String(s.id) === String(setId));
+  if (!set) return;
+  const stnSelect = document.getElementById(`stn-${setId}`);
+  const stnValue = stnSelect?.value || '';
+  const selectedOpt = stnSelect?.selectedOptions?.[0];
+  const isStation = stnValue.startsWith('station:'), isStream = stnValue.startsWith('stream:');
+  try {
+    let targetId = setId;
+    const callRes = await sggQuery(`mutation { markSetCalled(setId: "${targetId}") { id state } }`);
+
+    // Start.gg might have converted a "preview_" ID into a real numeric ID
+    if (callRes?.data?.markSetCalled?.id) {
+      targetId = callRes.data.markSetCalled.id;
+    }
+
+    // THEN assign the location using the updated ID
+    if (isStation) {
+      const sid = stnValue.replace('station:', '');
+      await sggQuery(`mutation { assignStation(setId: "${targetId}", stationId: "${sid}") { id } }`);
+      recentlyAssignedLocs.set(String(sid), Date.now()); // Locally lock the station
+    }
+    else if (isStream) {
+      const sid = stnValue.replace('stream:', '');
+      await sggQuery(`mutation { assignStream(setId: "${targetId}", streamId: "${sid}") { id } }`);
+      recentlyAssignedLocs.set(String(sid), Date.now()); // Locally lock the stream
+    }
+
+    const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+    const locName = isStation ? `Station ${selectedOpt.dataset.num}` : isStream ? `🎥 ${selectedOpt.dataset.name}` : '?';
+    const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+    const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+    const ping = buildCallPing({ mA, mB, loc: locName, roundText: set.fullRoundText, dqTimestamp: dTs });
+    await sendWebhook(ping.content);
+
+    announcedSetIds.add(String(targetId));
+    if (targetId !== setId) announcedSetIds.add(String(setId));
+
+    toast(`${ping.shiny ? '✨ SHINY ' : ''}📢 ${nA} vs ${nB}`);
+    if (ping.shiny) toast('✨ SHINY PING! 1/8192 — go check Discord');
+    logMatch(nA, nB, locName, 'manual', targetId, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum, ping.shiny); fetchManualSets();
+  } catch (e) { toast(`✗ ${e.message}`, true); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Hub check-in
+// ─────────────────────────────────────────────────────────────
+async function toggleHubCheckin(setId, entrantId, name) {
+  const key = `${setId}-${entrantId}`;
+  if (hubCheckins.has(key)) hubCheckins.delete(key);
+  else { hubCheckins.add(key); toast(`🟢 ${name} checked in!`); }
+  saveCheckins();
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) || pendingSetsData.find(s => String(s.id) === String(setId));
+  if (set && set.state === 6) {
+    const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
+    if (hubCheckins.has(`${setId}-${idA}`) && hubCheckins.has(`${setId}-${idB}`)) {
+      // Re-render first so both checkmarks are visible, then transition after a short delay
+      renderPlayerHub(); renderManualSets();
+      toast('Both players checked in!');
+      setTimeout(async () => {
+        await markInProgressQuick(setId, true);
+      }, 1200);
+      return;
+    }
+  }
+  renderPlayerHub(); renderManualSets();
+}
+
+// ─────────────────────────────────────────────────────────────
+// Keyboard shortcut: "32Enter" fills scores and submits
+// ─────────────────────────────────────────────────────────────
+let _scoreKbdBuffer = '', _scoreKbdTimer = null;
+
+document.addEventListener('keydown', e => {
+  const overlay = document.getElementById('scoreOverlay');
+
+  // Only intercept keys if the score overlay is actually open
+  if (overlay && overlay.style.display === 'flex') {
+
+    // If a number key is pressed
+    if (e.key >= '0' && e.key <= '9') {
+      e.preventDefault();
+      _scoreKbdBuffer += e.key;
+      clearTimeout(_scoreKbdTimer);
+
+      // First number sets Player A
+      if (_scoreKbdBuffer.length === 1) {
+        setScore('A', parseInt(_scoreKbdBuffer[0], 10));
+      }
+      // Second number sets Player B
+      else if (_scoreKbdBuffer.length === 2) {
+        setScore('B', parseInt(_scoreKbdBuffer[1], 10));
+      }
+
+      // Clear the buffer if they stop typing for 3 seconds
+      _scoreKbdTimer = setTimeout(() => { _scoreKbdBuffer = ''; }, 3000);
+    }
+
+    // If Enter is pressed and we have both scores
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (_overlayScoreA !== null && _overlayScoreB !== null && _overlayScoreA !== _overlayScoreB) {
+        submitOverlayScore();
+        _scoreKbdBuffer = '';
+      }
+    }
+
+    // If Escape is pressed
+    else if (e.key === 'Escape') {
+      closeScoreOverlay();
+    }
+  }
+});
+
+function toggleHubScore(setId) {
+  const el = document.getElementById(`hub-score-modal-${setId}`);
+  const opening = el.style.display !== 'block';
+  document.querySelectorAll('.hub-score-modal').forEach(m => m.style.display = 'none');
+  if (opening) { el.style.display = 'block'; _scoreKbdBuffer = ''; }
+}
+
+function updateScoreUI(setId, nameA, nameB, prefix = "") {
+  const sA = parseInt(document.getElementById(`${prefix}scoreA-${setId}`).value) || 0;
+  const sB = parseInt(document.getElementById(`${prefix}scoreB-${setId}`).value) || 0;
+  const btn = document.getElementById(`${prefix}reportBtn-${setId}`);
+  const inA = document.getElementById(`${prefix}scoreA-${setId}`), inB = document.getElementById(`${prefix}scoreB-${setId}`);
+  if (sA > sB) { btn.innerHTML = `🏆 Report: <strong>${nameA}</strong> Wins!`; inA.style.borderColor = 'var(--accent)'; inB.style.borderColor = 'var(--border)'; }
+  else if (sB > sA) { btn.innerHTML = `🏆 Report: <strong>${nameB}</strong> Wins!`; inB.style.borderColor = 'var(--accent)'; inA.style.borderColor = 'var(--border)'; }
+  else { btn.innerHTML = `🏆 Submit Score`; inA.style.borderColor = 'var(--border)'; inB.style.borderColor = 'var(--border)'; }
+  btn.style.background = 'var(--accent)'; btn.style.color = '#000';
+}
+
+// ─────────────────────────────────────────────────────────────
+// Station Status Sidebar — shows every station + stream with current state
+// ─────────────────────────────────────────────────────────────
+function renderStationSidebar() {
+  const el = document.getElementById('stationStatusList');
+  if (!el) return;
+  if (!stationList.length && !streamList.length) {
+    el.innerHTML = '<div style="font-size:0.75rem;color:var(--muted);text-align:center;padding:14px 0;">No stations loaded yet</div>';
+    return;
+  }
+
+  // Build a quick lookup of who's on which location.
+  // Streams take precedence over stations when both are set on a single set.
+  const stationOccupants = new Map(); // stationId -> set
+  const streamOccupants = new Map(); // streamId  -> set
+  const activeForOccupancy = activeSetsData.filter(s => s.state === 2 || s.state === 6);
+  for (const s of activeForOccupancy) {
+    if (s.stream?.id) streamOccupants.set(String(s.stream.id), s);
+    else if (s.station?.id) stationOccupants.set(String(s.station.id), s);
+  }
+
+  const rows = [];
+
+  // Streams first (ranked higher visually)
+  for (const stream of streamList) {
+    const occupant = streamOccupants.get(String(stream.id));
+    if (occupant) {
+      const a = occupant.slots[0]?.entrant?.name || '?';
+      const b = occupant.slots[1]?.entrant?.name || '?';
+      rows.push(`<div class="station-row stream-row busy">
+        <div class="sr-num">📺</div>
+        <div class="sr-info">
+          <div class="sr-label">${stream.streamName}</div>
+          <div class="sr-status" title="${a} vs ${b}">${a} vs ${b}</div>
+        </div>
+        <div class="sr-dot"></div>
+      </div>`);
+    } else {
+      rows.push(`<div class="station-row stream-row free">
+        <div class="sr-num">📺</div>
+        <div class="sr-info">
+          <div class="sr-label">${stream.streamName}</div>
+          <div class="sr-status">empty · queue a match below</div>
+        </div>
+        <div class="sr-dot"></div>
+      </div>`);
+    }
+  }
+
+  // Then stations sorted by number
+  const sortedStations = stationList.slice().sort((a, b) => a.number - b.number);
+  for (const stn of sortedStations) {
+    const occupant = stationOccupants.get(String(stn.id));
+    if (occupant) {
+      const a = occupant.slots[0]?.entrant?.name || '?';
+      const b = occupant.slots[1]?.entrant?.name || '?';
+      const stateLabel = occupant.state === 2 ? '▶' : '⏱';
+      rows.push(`<div class="station-row busy">
+        <div class="sr-num">${stn.number}</div>
+        <div class="sr-info">
+          <div class="sr-label">Station ${stn.number}</div>
+          <div class="sr-status" title="${a} vs ${b}">${stateLabel} ${a} vs ${b}</div>
+        </div>
+        <div class="sr-dot"></div>
+      </div>`);
+    } else {
+      rows.push(`<div class="station-row free">
+        <div class="sr-num">${stn.number}</div>
+        <div class="sr-info">
+          <div class="sr-label">Station ${stn.number}</div>
+          <div class="sr-status">free</div>
+        </div>
+        <div class="sr-dot"></div>
+      </div>`);
+    }
+  }
+
+  el.innerHTML = rows.join('');
+}
+
+// ─────────────────────────────────────────────────────────────
+// Stream Queue — manual stream slot management
+// ─────────────────────────────────────────────────────────────
+function renderStreamQueue() {
+  const el = document.getElementById('streamQueueSlots');
+  if (!el) return;
+  if (!streamList.length) {
+    el.innerHTML = '<div style="font-size:0.78rem;color:var(--muted);padding:10px 0;">No streams configured for this event.</div>';
+    return;
+  }
+
+  // Active sets that could be moved to stream — anything currently called or
+  // in progress on a station, sorted by stream score (closer seeds = better).
+  const candidates = activeSetsData
+    .filter(s => (s.state === 2 || s.state === 6) && !s.stream?.id) // not already on a stream
+    .slice()
+    .sort((a, b) => getStreamScore(a) - getStreamScore(b));
+
+  // Build candidates HTML once — reused under each empty stream slot
+  const buildCandidatesFor = (streamId, streamName) => {
+    if (!candidates.length) {
+      return `<div style="font-size:0.7rem;color:var(--muted);padding:6px 0;text-align:center;">No active matches available to send to stream.</div>`;
+    }
+    return candidates.slice(0, 6).map(set => {
+      const a = set.slots[0]?.entrant?.name || '?';
+      const b = set.slots[1]?.entrant?.name || '?';
+      const sA = set.slots[0]?.seed?.seedNum, sB = set.slots[1]?.seed?.seedNum;
+      const score = getStreamScore(set);
+      const grade = streamGrade(score);
+      const fromStation = set.station?.number ? `Station ${set.station.number}` : 'unassigned';
+      const round = set.fullRoundText || '';
+      const escName = streamName.replace(/'/g, "\\'");
+      return `<div class="cand-row" onclick="requestMoveToStream('${set.id}', '${streamId}', '${escName}')" title="Click to send to ${streamName}">
+        <div class="cand-info">
+          <div class="cand-players">${a} <span style="color:var(--muted);font-weight:400;">vs</span> ${b}</div>
+          <div class="cand-meta">${round} · ${fromStation}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}</div>
+        </div>
+        <div class="cand-grade">${grade || ''}</div>
+      </div>`;
+    }).join('');
+  };
+
+  el.innerHTML = streamList.map(stream => {
+    const occupant = activeSetsData.find(s => String(s.stream?.id) === String(stream.id) && (s.state === 2 || s.state === 6));
+    if (occupant) {
+      const a = occupant.slots[0]?.entrant?.name || '?';
+      const b = occupant.slots[1]?.entrant?.name || '?';
+      const round = occupant.fullRoundText || '';
+      const stateLbl = occupant.state === 2 ? 'IN PROGRESS' : 'CALLED';
+      return `<div class="stream-slot live">
+        <div class="ss-head">
+          <div class="ss-name">🎥 ${stream.streamName}</div>
+          <div class="ss-status">${stateLbl}</div>
+        </div>
+        <div class="ss-match">${a} <span style="color:var(--muted);font-weight:400;">vs</span> ${b}</div>
+        <div class="ss-match-meta">${round}</div>
+        <div class="ss-actions">
+          <button class="ss-mini-btn danger" onclick="pullFromStream('${occupant.id}')">⏏ Remove from stream</button>
+        </div>
+      </div>`;
+    }
+    // Empty slot — show candidates inline
+    return `<div class="stream-slot empty">
+      <div class="ss-head">
+        <div class="ss-name">🎥 ${stream.streamName}</div>
+        <div class="ss-status">EMPTY</div>
+      </div>
+      <div class="candidate-list">
+        <h5>Send to this stream:</h5>
+        ${buildCandidatesFor(stream.id, stream.streamName)}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────────────────────
+// Player Hub — stable fixed-size card grid
+// ─────────────────────────────────────────────────────────────
+function renderPlayerHub() {
+  const activeEl = document.getElementById('hubActiveList');
+  if (!activeEl) return;
+
+  // Side panels are independent of the main card grid — render them
+  // unconditionally so the TO sees current station + stream state.
+  renderStationSidebar();
+  renderStreamQueue();
+
+  const actionSets = activeSetsData.filter(s => s.state === 2 || s.state === 6);
+  const currentIds = actionSets.map(s => String(s.id));
+  currentIds.forEach(id => { if (!_hubSlotIds.includes(id)) _hubSlotIds.push(id); });
+  _hubSlotIds = _hubSlotIds.filter(id => currentIds.includes(id));
+
+  const CARD_H = '200px';
+
+  const cards = _hubSlotIds.map(slotId => {
+    const set = actionSets.find(s => String(s.id) === slotId);
+
+    if (!set) return `<div style="height:${CARD_H};background:var(--bg);border:1px dashed var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;">
+      <span style="font-size:0.75rem;color:var(--border);">—</span>
+    </div>`;
+
+    const a = set.slots[0]?.entrant, b = set.slots[1]?.entrant;
+    const nameA = a?.name || '???', nameB = b?.name || '???';
+    const loc = set.station?.number ? `Station ${set.station.number}` : set.stream?.streamName ? `Stream ${set.stream.streamName}` : 'No Location';
+    const escA = nameA.replace(/'/g, "\'"), escB = nameB.replace(/'/g, "\'");
+
+    if (set.state === 6) {
+      const ciA = hubCheckins.has(`${set.id}-${a?.id}`), ciB = hubCheckins.has(`${set.id}-${b?.id}`);
+      const callTime = set.updatedAt || set.createdAt || Math.floor(Date.now() / 1000);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const isExpired = (nowSec - callTime) / 60 >= DQ_MINUTES;
+      const autoDqOn = document.getElementById('autoDqToggle')?.checked !== false;
+
+      // Handle Manual DQ Fallback Layout
+      if (isExpired && !autoDqOn) {
+        return `<div style="height:${CARD_H};background:rgba(255,79,109,0.06);border:2px solid var(--accent2);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;animation: slideIn 0.2s ease;overflow:hidden;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0;min-width:0;">
+            <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Timer Expired &middot; ${loc}</span>
+          </div>
+          <div style="font-size:1rem;font-weight:800;line-height:1.3;word-break:break-word;margin:auto 0;">${nameA} <span style="color:var(--muted);font-weight:400;">vs</span> ${nameB}</div>
+          <div style="font-size:0.78rem;color:var(--accent2);font-weight:700;word-break:break-word;">${(!ciA && !ciB) ? 'Neither checked in' : (!ciA ? `${nameA} missing` : `${nameB} missing`)}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex-shrink:0;">
+            <button onclick="requestHubDQ('${set.id}')" class="hub-dq-btn">DQ?</button>
+            <button onclick="markInProgressQuick('${set.id}')" style="background:transparent;border:2px solid var(--accent);color:var(--accent);padding:10px;border-radius:8px;font-family:'Space Mono',monospace;font-weight:bold;cursor:pointer;font-size:0.85rem;transition:0.1s;" onmouseover="this.style.background='var(--accent)';this.style.color='#000';" onmouseout="this.style.background='transparent';this.style.color='var(--accent)';">Start Set?</button>
+          </div>
+        </div>`;
+      }
+
+      const brdA = ciA ? 'var(--accent)' : 'rgba(255,255,255,0.1)', bgA = ciA ? 'rgba(0,229,160,0.2)' : 'rgba(255,255,255,0.04)', clA = ciA ? 'var(--accent)' : 'var(--text)';
+      const brdB = ciB ? 'var(--accent)' : 'rgba(255,255,255,0.1)', bgB = ciB ? 'rgba(0,229,160,0.2)' : 'rgba(255,255,255,0.04)', clB = ciB ? 'var(--accent)' : 'var(--text)';
+      return `<div style="height:${CARD_H};background:var(--bg);border:2px solid var(--accent2);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+          <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;">Called &middot; ${loc}</span>
+          <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);">DQ:&nbsp;<span class="dq-timer-display" data-time="${callTime}">0:00</span></span>
+        </div>
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);flex-shrink:0;">Players checked in:</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;">
+          <button onclick="toggleHubCheckin('${set.id}','${a?.id}','${escA}')"
+            style="border-radius:8px;border:2px solid ${brdA};background:${bgA};color:${clA};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden;transition:all 0.15s;">
+            <span style="font-size:1.6rem;line-height:1;">${ciA ? '&#x2705;' : '&#x2B1C;'}</span>
+            <span style="font-size:0.82rem;font-weight:${ciA ? '600' : '800'};word-break:break-word;max-width:100%;text-align:center;line-height:1.2;">${nameA}</span>
+          </button>
+          <button onclick="toggleHubCheckin('${set.id}','${b?.id}','${escB}')"
+            style="border-radius:8px;border:2px solid ${brdB};background:${bgB};color:${clB};font-family:'Inter',sans-serif;cursor:pointer;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;overflow:hidden;transition:all 0.15s;">
+            <span style="font-size:1.6rem;line-height:1;">${ciB ? '&#x2705;' : '&#x2B1C;'}</span>
+            <span style="font-size:0.82rem;font-weight:${ciB ? '600' : '800'};word-break:break-word;max-width:100%;text-align:center;line-height:1.2;">${nameB}</span>
+          </button>
+        </div>
+      </div>`;
+    }
+
+    if (set.state === 2) {
+      return `<div style="height:${CARD_H};background:var(--bg);border:2px solid var(--accent);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between;gap:10px;">
+        <div style="flex-shrink:0;">
+          <div style="font-size:0.7rem;color:var(--accent);font-family:'Space Mono',monospace;margin-bottom:6px;">In Progress &middot; ${loc}</div>
+          <div style="font-size:1rem;font-weight:800;line-height:1.3;word-break:break-word;">${nameA} <span style="color:var(--muted);font-weight:400;">vs</span> ${nameB}</div>
+        </div>
+        <button onclick="openScoreOverlay('${set.id}','${a?.id}','${b?.id}','${escA}','${escB}','${loc}')"
+          style="flex-shrink:0;padding:12px;border-radius:8px;border:none;background:var(--accent);color:#000;font-family:'Inter',sans-serif;font-size:0.9rem;font-weight:800;cursor:pointer;letter-spacing:0.3px;">
+          &#x1F4DD; Report Score
+        </button>
+      </div>`;
+    }
+    return '';
+  });
+
+  activeEl.innerHTML = cards.length
+    ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px;">${cards.join('')}</div>`
+    : '<div class="sets-empty" style="padding:40px 0;">No active matches right now.</div>';
+  updateTimerCache();
+}
+
+// ─────────────────────────────────────────────────────────────
+// Session Log
+// ─────────────────────────────────────────────────────────────
+function logMatch(nameA, nameB, station, source, setId = null, seedA = null, seedB = null, shiny = false) {
+  const _sc = (seedA && seedB) ? Math.abs(seedA - seedB) + (seedA + seedB) * 0.1 : 9999;
+  const _gr = streamGrade(_sc);
+  matchLog.unshift({ p1: nameA, p2: nameB, station, source, setId, completed: false, grade: _gr, shiny, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+  renderLog();
+}
+
+function resetMatch(setId) {
+  announcedSetIds.delete(String(setId)); completedSetIds.delete(String(setId));
+  const entry = matchLog.find(e => e.setId === setId);
+  if (entry) entry.completed = false;
+  renderLog();
+  addPollLog(`↩ Reset set ${setId} — will re-ping on next poll`, 'new');
+  toast('↩ Reset — will re-ping next poll');
+}
+
+function renderLog() {
+  const el = document.getElementById('matchLog');
+  if (!matchLog.length) { el.innerHTML = '<div class="empty-log">No matches called yet.</div>'; return; }
+  el.innerHTML = matchLog.map(e => `
+    <div class="match-entry ${e.source === 'auto' ? 'auto' : ''} ${e.completed ? 'done' : ''}">
+      <div style="flex:1;min-width:0;">
+        <div class="players">${e.p1} <span style="color:var(--muted)">vs</span> ${e.p2}${e.shiny ? ' <span class="shiny-badge">✨ SHINY</span>' : ''}</div>
+        <div class="meta">${e.time} · ${e.source === 'auto' ? '⚡ auto' : '🖐 manual'}${e.grade ? ' &middot; ' + e.grade : ''}${e.completed ? ' · <span style="color:var(--accent)">✓ done</span>' : ''}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        <div class="stn">${e.station}</div>
+        ${e.setId && !e.completed ? `<button class="btn-sm" style="font-size:0.68rem;padding:5px 8px;" onclick="resetMatch('${e.setId}')">↩</button>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+function toast(msg, err = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.className = err ? 'err' : '';
+  void el.offsetWidth; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Score Overlay — button-based score picker
+// ─────────────────────────────────────────────────────────────
+let _overlaySetId = null, _overlayIdA = null, _overlayIdB = null;
+let _overlayNameA = '', _overlayNameB = '';
+let _overlayScoreA = null, _overlayScoreB = null;
+
+function openScoreOverlay(setId, idA, idB, nameA, nameB, loc) {
+  _overlaySetId = setId; _overlayIdA = idA; _overlayIdB = idB;
+  _overlayNameA = nameA; _overlayNameB = nameB;
+  _overlayScoreA = null; _overlayScoreB = null;
+  document.getElementById('scoreOverlayTitle').textContent = `${nameA} vs ${nameB}`;
+  document.getElementById('scoreOverlayLoc').textContent = loc;
+  document.getElementById('scoreOverlayNameA').textContent = nameA;
+  document.getElementById('scoreOverlayNameB').textContent = nameB;
+  document.getElementById('scoreDisplayA').textContent = '—';
+  document.getElementById('scoreDisplayB').textContent = '—';
+  document.getElementById('scoreDisplayA').style.color = 'var(--muted)';
+  document.getElementById('scoreDisplayB').style.color = 'var(--muted)';
+  // Reset all buttons
+  [0, 1, 2, 3].forEach(n => {
+    ['A', 'B'].forEach(p => {
+      const btn = document.getElementById(`sb${p}${n}`);
+      if (btn) btn.classList.remove('selected');
+    });
+  });
+  const submitBtn = document.getElementById('scoreOverlayBtn');
+  submitBtn.textContent = 'Select scores above';
+  submitBtn.style.opacity = '0.4';
+  submitBtn.style.pointerEvents = 'none';
+  document.getElementById('scoreOverlay').style.display = 'flex';
+  _scoreKbdBuffer = '';
+}
+
+function setScore(player, value) {
+  if (player === 'A') {
+    _overlayScoreA = value;
+    document.getElementById('scoreDisplayA').textContent = value;
+    document.getElementById('scoreDisplayA').style.color = 'var(--accent)';
+    [0, 1, 2, 3].forEach(n => document.getElementById(`sbA${n}`)?.classList.toggle('selected', n === value));
+  } else {
+    _overlayScoreB = value;
+    document.getElementById('scoreDisplayB').textContent = value;
+    document.getElementById('scoreDisplayB').style.color = 'var(--accent)';
+    [0, 1, 2, 3].forEach(n => document.getElementById(`sbB${n}`)?.classList.toggle('selected', n === value));
+  }
+  updateOverlayScore();
+}
+
+function closeScoreOverlay() {
+  document.getElementById('scoreOverlay').style.display = 'none';
+  _overlaySetId = null; _scoreKbdBuffer = '';
+}
+
+function updateOverlayScore() {
+  if (_overlayScoreA === null || _overlayScoreB === null) return;
+  const submitBtn = document.getElementById('scoreOverlayBtn');
+  if (_overlayScoreA === _overlayScoreB) {
+    submitBtn.textContent = "Scores can't be tied — pick again";
+    submitBtn.style.opacity = '0.4'; submitBtn.style.pointerEvents = 'none';
+    return;
+  }
+  const winnerName = _overlayScoreA > _overlayScoreB ? _overlayNameA : _overlayNameB;
+  const ws = Math.max(_overlayScoreA, _overlayScoreB), ls = Math.min(_overlayScoreA, _overlayScoreB);
+  submitBtn.textContent = `Report: ${winnerName} Wins ${ws}-${ls}`;
+  submitBtn.style.opacity = '1'; submitBtn.style.pointerEvents = 'auto';
+}
+
+async function submitOverlayScore() {
+  if (_overlaySetId === null || _overlayScoreA === null || _overlayScoreB === null) return;
+  if (_overlayScoreA === _overlayScoreB) { toast("Scores can't be tied", true); return; }
+  const setId = _overlaySetId, idA = _overlayIdA, idB = _overlayIdB;
+  const nameA = _overlayNameA, nameB = _overlayNameB;
+  const sA = _overlayScoreA, sB = _overlayScoreB;
+  closeScoreOverlay();
+
+  const winnerId = sA > sB ? idA : idB;
+  const winnerName = sA > sB ? nameA : nameB;
+  let gameData = [], g = 1;
+  for (let i = 0; i < sA; i++) gameData.push(`{winnerId: "${idA}", gameNum: ${g++}}`);
+  for (let i = 0; i < sB; i++) gameData.push(`{winnerId: "${idB}", gameNum: ${g++}}`);
+  try {
+    await sggQuery(`mutation { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", gameData: [${gameData.join(',')}]) { id state } }`);
+    toast(`🏆 Reported: ${winnerName} wins!`);
+    completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
+    hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
+    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    const entry = matchLog.find(e => e.setId === setId);
+    if (entry) { entry.completed = true; renderLog(); }
+    fetchManualSets();
+  } catch (e) { toast(`✗ ${e.message}`, true); }
+}
+
+loadSettings();
+// Restore discord IDs from localStorage so page refresh doesn't wipe pings
+try {
+  const savedMap = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}');
+  for (const [tag, id] of Object.entries(savedMap)) {
+    if (!tagMap.has(tag)) {
+      const p = { tag, shortTag: tag, discordId: id };
+      tagMap.set(tag, p);
+    } else {
+      tagMap.get(tag).discordId = id;
+    }
+  }
+} catch (e) { }
+renderLog();
+
+// --- WordPress compatibility shim ---
+// Some WP optimization plugins (WP Rocket, Autoptimize, LiteSpeed, SiteGround Optimizer,
+// etc.) wrap inline scripts in IIFEs or load them as modules, which scopes our top-level
+// functions out of `window`. Inline `onclick=`/`onchange=` handlers can only see globals,
+// so we explicitly publish every inline-handler-callable function here.
+Object.assign(window, {
+  browseEvents, callSetFromPanel, clearPhaseFilter, closeConfirmModal, closeScoreOverlay,
+  copyPollLog, fetchAndPopulateStreams, fetchManualSets, hubToggleWatch, loadCSV,
+  loadPhaseGroups, manualLink, markInProgressQuick, openScoreOverlay, pullFromStream,
+  renderManualSets, requestDQ, requestHubDQ, requestMoveToStream, resetMatch,
+  savePriorityStream, saveSettings, setScore, startPolling, stopPolling,
+  submitOverlayScore, switchTab, toggleHubCheckin, toggleSetup
+});
