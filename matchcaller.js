@@ -9,6 +9,25 @@ let hubCheckins = new Set();
 let recentlyAssignedLocs = new Map(); // Local lock for stations: loc.id -> timestamp
 let DQ_MINUTES = 5.5;
 
+// Stream queues — per-stream ordered list of setIds waiting to go on stream.
+// Pure client-side state (no API call until "Send to stream" promotes the head).
+// Shape: { [streamId]: [setId, setId, ...] }
+let streamQueues = {};
+// Tracks which streams have their "+ Add to queue" panel expanded
+let _expandedAddQueues = new Set();
+
+function loadStreamQueues() {
+  try {
+    const raw = localStorage.getItem('abbey_stream_queues');
+    streamQueues = raw ? JSON.parse(raw) : {};
+    if (typeof streamQueues !== 'object' || streamQueues === null) streamQueues = {};
+  } catch { streamQueues = {}; }
+}
+function saveStreamQueues() {
+  try { localStorage.setItem('abbey_stream_queues', JSON.stringify(streamQueues)); } catch {}
+}
+loadStreamQueues();
+
 // Stable slot ordering for hub cards — prevents layout shift
 let _hubSlotIds = [];
 
@@ -34,7 +53,9 @@ function getLowestIncompletePhase() {
 
 function getDiscordMention(playerName) {
   const p = resolvePlayer(playerName);
-  return p?.discordId ? `<@${p.discordId}>` : playerName;
+  // When linked: ping the user AND show their start.gg tag in parens for clarity.
+  // When not linked: just show the tag (no mention available).
+  return p?.discordId ? `<@${p.discordId}> (${playerName})` : playerName;
 }
 
 try {
@@ -501,49 +522,111 @@ async function sendWebhook(content) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Ping flair — varied messaging + 1/8192 shiny easter egg
+// Ping flair — maximum cringe + 1/8192 shiny easter egg
 // ─────────────────────────────────────────────────────────────
 const PING_INTROS = [
-  '📢 SET CALLED!',
-  '🔔 You\'re up!',
-  '⚔️ Combatants, take your stage!',
-  '🎮 Showtime!',
-  '🚨 New match incoming',
-  '🎯 The bracket has spoken',
-  '⚡ Lock in — match called',
-  '🔥 Time to throw down',
-  '🎲 Your number\'s up',
-  '💥 Match ready',
-  '🥊 Gloves on, fingers warm',
-  '📣 Ladies and gentlemen…',
+  '🥺 pwease come pway 🥺',
+  '👉👈 hewwo your match is wittle bit weady',
+  '✨💖 hey besties 💖✨ match time!',
+  'OMG ROUND TWO?!?!?! 🎀🎀🎀',
+  '📢 the bracket has summoned thee, mortal',
+  '🎀 mood: bracket called 💅',
+  '💀 not me having to call you 💀',
+  '✨ slay queens (and kings) ✨ time to throw',
+  '🤓☝️ um actually your match is up',
+  '🫡 reporting for ✨combat✨',
+  '💗💗 hi besties guess what 💗💗',
+  '🤪 lol bestie ur match is goofy ahh up',
+  'fr fr no cap your match is called 🧢',
+  '✨ plot twist ✨ bracket said it\'s your turn',
+  '🥹 it\'s giving... your match. it\'s giving your match.',
+  'skibidi bracket wants u 😎',
+  'rizz check: you up 🫦',
+  'POV: you opened discord and saw this 📲',
+  '🎀 bestie ur match called and i fear u must answer 🎀',
+  '🫶 the bracket loves u (also it called u) 🫶',
+  '👁️👄👁️ ur match. it\'s here.',
+  '🍃🍃 babe wake up new match dropped 🍃🍃',
+  'periodt 💅 ur match is called',
+  '🛎️ Bracket says hi',
+  '👀 Look alive',
+  '🫵 You. Match. Now.',
+  '⚠️ Phone down. Controller up.',
 ];
 const PING_DIRECTIONS = [
-  '🚶 Head to the TO area upstairs to check in.',
-  '🪜 Up the stairs! Check in at the TO desk before you play.',
-  '🏃 Sprint to the TO area upstairs and check in.',
-  '⬆️ Get yourself up to the TO area for check-in, then play.',
-  '📍 TO area is upstairs — check in there before starting.',
-  '🚪 March on up to the TO area and check in.',
+  '🚶 walk your wittle wegs to the TO area uwu',
+  '🪜 those stairs aren\'t gonna climb themselves bestie',
+  '✨ teleport to the TO desk ✨ (jk just walk)',
+  '👣 leave footprints in the direction of: upstairs',
+  '🛗 imaginary elevator to the TO area is broken 💔 take stairs queen',
+  '🦵 LEG DAY 💪 stairs to TO area, let\'s gooo',
+  '📍 the TO area is upstairs no it\'s not in your phone bestie',
+  '🚶 TO area is upstairs. We know stairs are hard.',
+  '🪜 manifest yourself at the top of the stairs ✨',
+  '🥾 hike up to the TO area like the main character u are',
+  '🛗 upstairs is where the magic happens (and the check-in desk)',
+  '👆 up there. yeah there. where the adults are. check in.',
 ];
 const PING_WARNINGS = [
-  '⚠️ Check in by <t:%t:t> (<t:%t:R>) or risk DQ',
-  '⏰ Be there by <t:%t:t> or you\'re getting auto-DQ\'d (<t:%t:R>)',
-  '⏳ Clock\'s ticking — <t:%t:t> is the deadline (<t:%t:R>)',
-  '🎲 Make it by <t:%t:t> or kiss the bracket goodbye (<t:%t:R>)',
-  '💀 No-show by <t:%t:t> = automatic L (<t:%t:R>)',
-  '🐌 Slow rolling? Check in by <t:%t:t> (<t:%t:R>) or get the boot',
-  '⌛ DQ clock starts now. Hit <t:%t:t> or hit the lobby (<t:%t:R>)',
+  '💀 don\'t be mid, be ON TIME (<t:%t:t>) bestie or get that L (<t:%t:R>)',
+  '⏰ <t:%t:t> ✨ deadline ✨ or you\'re getting that L tier behavior (<t:%t:R>)',
+  '😭 <t:%t:t> or you simply must accept the DQ (<t:%t:R>)',
+  '🤡 don\'t be the clown who DQs themselves <t:%t:t> (<t:%t:R>)',
+  '📵 <t:%t:t> bestie or it\'s a ✨skill issue✨ (<t:%t:R>)',
+  '🪦 RIP your bracket run if you\'re not there by <t:%t:t> (<t:%t:R>)',
+  '💅 the giving up window closes <t:%t:t> (<t:%t:R>)',
+  '😬 <t:%t:t> or you\'re NOT the moment (<t:%t:R>)',
+  '🫠 don\'t melt under pressure — <t:%t:t> (<t:%t:R>)',
+  '⏳ <t:%t:R> until you become a cautionary tale (<t:%t:t>)',
+  '🐢 Slow rolling? <t:%t:t> deadline (<t:%t:R>). Move it.',
+  '🚪 Doors close <t:%t:t> (<t:%t:R>). Don\'t get locked out.',
+  '👻 ghost the bracket by <t:%t:t> = automatic L (<t:%t:R>)',
 ];
+// Generic stream-move pool. The function injects ${streamLabel} via the
+// directive line below, so these intros stay neutral about which stream.
 const PING_STREAM_MOVE = [
-  '📺 You\'ve been promoted to STREAM',
-  '🎬 Lights, camera, action — moving to stream',
-  '🌟 Spotlight time! Heading to the stream',
-  '🎥 Get hype — your set is going to stream',
-  '✨ Stream calling! Drop what you\'re doing',
-  '🎙️ The cast is requesting your presence on stream',
+  '📺 babe wake up new stream slot just dropped 🛏️',
+  '🎀 stream is feeling generous today, you got promoted 🎀',
+  '✨💖 yass queen STREAM TIME 💖✨',
+  '📺 not me putting you on stream 💀',
+  '🥺👉👈 we want to put you on stream pwease come',
+  'OMG IT\'S YOUR STREAM ERA 🎀✨',
+  '📺 bestie ur on stream now, don\'t be cringe (im allowed to say it not u)',
+  '🤳 caught in 4k now bestie',
+  '🎬 lights camera ✨ya✨ that\'s u',
+  '📡 Broadcast incoming. That\'s you, pal.',
+  '🍿 The people demand entertainment. Provide it.',
+  '🎥 You\'re on TV now. Behave.',
+  '🪩 Spotlight\'s warm. Get in it.',
+  'POV: ur about to be a clip 🎬',
+  'main character energy unlocked 🌟 stream incoming',
+  '✨ stream said you\'re the moment ✨',
+];
+// SFMelee main stream gets its own pool — heavy hype + heavy cringe.
+const PING_STREAM_MOVE_SFMELEE = [
+  '📺💎 BABE. SFMELEE. WAKE UP. 💎📺',
+  '✨ pov: u just got the SFMelee stream call ✨',
+  '🎀 SFMelee era unlocked 🎀 don\'t blow it queen',
+  '📺 SFMelee said \'we love this for them\' 💗',
+  '💀 SFMelee chose violence (you, on camera)',
+  '🌟 SFMelee said: it\'s giving star quality. it\'s you. it\'s giving you.',
+  '✨ canonical event: u on SFMelee ✨',
+  '👑 SFMelee crowned u for being the moment 👑',
+  '📺💎 You\'ve been promoted to **the SFMelee stream**. Don\'t blow it.',
+  '🌉 Welcome to the big show. **SFMelee** is calling.',
+  '🎬 Main stage time — **SFMelee** wants you on camera',
+  '🍿 Alright superstar, **SFMelee** stream needs you',
+  '🎙️ **SFMelee** main stream. The crown jewel. You. Now.',
+  '👑 Bay Area\'s eyes are on you now. **SFMelee** stream awaits.',
+  '📺 SFMelee picked u and i think that\'s beautiful 🥹',
+  '✨ rizz the SFMelee camera bestie ✨',
 ];
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function isSFMeleeStream(label) { return /sf\s*_*melee/i.test(String(label || '')); }
+
+// Mandatory sign-off — appended to every Discord ping.
+const PING_DISCLAIMER = `*My name is LarsBars and I don't approve this message.*`;
 
 // 1 in 8192 — Pokémon shiny odds. Once a tournament if you're lucky. Maybe.
 function rollShiny() { return Math.floor(Math.random() * 8192) === 0; }
@@ -565,38 +648,48 @@ function buildCallPing({ mA, mB, loc, roundText, dqTimestamp }) {
       `${direction}\n` +
       `${warning}\n` +
       `🌈 *This set is now part of Abbey Tavern lore.*\n` +
-      `——————————————————`;
+      `——————————————————\n` +
+      `${PING_DISCLAIMER}`;
     return { content, shiny: true };
   }
 
   const content =
-    `${intro} ${mA} vs ${mB} — ${loc} *(${roundText})*\n` +
+    `${intro} — ${mA} vs ${mB} — ${loc} *(${roundText})*\n` +
     `${direction}\n` +
     `${warning}\n` +
-    `——————————————————`;
+    `——————————————————\n` +
+    `${PING_DISCLAIMER}`;
   return { content, shiny: false };
 }
 
 function buildStreamMovePing({ mA, mB, streamLabel, roundText }) {
   const shiny = rollShiny();
-  const intro = pick(PING_STREAM_MOVE);
+  const isSFMelee = isSFMeleeStream(streamLabel);
+  const intro = pick(isSFMelee ? PING_STREAM_MOVE_SFMELEE : PING_STREAM_MOVE);
+  // Always name the destination stream so sidestream calls aren't ambiguous.
+  const destination = isSFMelee
+    ? `🎥 Get to the **${streamLabel}** setup immediately. Cameras are rolling.`
+    : `🎥 Head to **${streamLabel}** and get ready to play.`;
+
   if (shiny) {
     return {
       content:
         `✨🌟✨ **A SHINY STREAM PROMOTION** ✨🌟✨\n` +
         `*(1/8192 — extremely rare flex)*\n\n` +
-        `${intro}: ${mA} vs ${mB} — heading to **${streamLabel}** *(${roundText})*\n` +
-        `🎥 Get to the stream setup and get ready to play.\n` +
+        `${intro}: ${mA} vs ${mB} → **${streamLabel}** *(${roundText})*\n` +
+        `${destination}\n` +
         `🌈 *Today is your day.*\n` +
-        `——————————————————`,
+        `——————————————————\n` +
+        `${PING_DISCLAIMER}`,
       shiny: true,
     };
   }
   return {
     content:
-      `${intro}: ${mA} vs ${mB} — heading to **${streamLabel}** *(${roundText})*\n` +
-      `🎥 Get to the stream setup and get ready to play.\n` +
-      `——————————————————`,
+      `${intro}: ${mA} vs ${mB} → **${streamLabel}** *(${roundText})*\n` +
+      `${destination}\n` +
+      `——————————————————\n` +
+      `${PING_DISCLAIMER}`,
     shiny: false,
   };
 }
@@ -1627,8 +1720,124 @@ function renderStationSidebar() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Stream Queue — manual stream slot management
+// Stream Queue — manual stream slot management with per-stream queue
 // ─────────────────────────────────────────────────────────────
+
+// ─── Queue mutators (all save to localStorage; caller re-renders) ───
+
+function addToStreamQueue(setId, streamId) {
+  const sid = String(streamId);
+  if (!streamQueues[sid]) streamQueues[sid] = [];
+  // Remove from any other stream's queue first (a set can only be queued once)
+  for (const otherSid of Object.keys(streamQueues)) {
+    if (otherSid === sid) continue;
+    streamQueues[otherSid] = streamQueues[otherSid].filter(x => String(x) !== String(setId));
+  }
+  // Append if not already in this queue
+  if (!streamQueues[sid].some(x => String(x) === String(setId))) {
+    streamQueues[sid].push(String(setId));
+  }
+  saveStreamQueues();
+  renderStreamQueue();
+  toast('Added to queue');
+}
+
+function removeFromStreamQueue(setId, streamId) {
+  const sid = String(streamId);
+  if (!streamQueues[sid]) return;
+  streamQueues[sid] = streamQueues[sid].filter(x => String(x) !== String(setId));
+  saveStreamQueues();
+  renderStreamQueue();
+}
+
+function moveInStreamQueue(setId, streamId, dir) {
+  const sid = String(streamId);
+  const q = streamQueues[sid];
+  if (!q) return;
+  const idx = q.findIndex(x => String(x) === String(setId));
+  if (idx < 0) return;
+  const target = idx + dir;
+  if (target < 0 || target >= q.length) return;
+  [q[idx], q[target]] = [q[target], q[idx]];
+  saveStreamQueues();
+  renderStreamQueue();
+}
+
+// Strip out finished/missing/already-on-stream sets — runs after every poll
+function cleanStreamQueues() {
+  let changed = false;
+  for (const sid of Object.keys(streamQueues)) {
+    const before = streamQueues[sid].length;
+    streamQueues[sid] = streamQueues[sid].filter(setId => {
+      const s = activeSetsData.find(x => String(x.id) === String(setId)) ||
+                pendingSetsData.find(x => String(x.id) === String(setId)) ||
+                allFetchedSets.find(x => String(x.id) === String(setId));
+      if (!s) return false; // set vanished from event
+      if (s.state === 3) return false; // completed
+      if (s.stream?.id) return false; // already on a stream
+      return true;
+    });
+    if (streamQueues[sid].length !== before) changed = true;
+  }
+  if (changed) saveStreamQueues();
+}
+
+// Promote head of queue: actually call assignStream API for the first queued match.
+// Reuses existing requestMoveToStream confirmation flow.
+function promoteFromQueue(streamId) {
+  const sid = String(streamId);
+  const q = streamQueues[sid] || [];
+  if (!q.length) { toast('Queue is empty for this stream', true); return; }
+  const setId = q[0];
+  const stream = streamList.find(s => String(s.id) === sid);
+  if (!stream) { toast('Stream not found', true); return; }
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
+              allFetchedSets.find(s => String(s.id) === String(setId));
+  if (!set) {
+    // Set is gone — drop it and try the next one
+    streamQueues[sid].shift();
+    saveStreamQueues();
+    renderStreamQueue();
+    toast('Queued match no longer available', true);
+    return;
+  }
+  // The success path of moveToStream calls fetchManualSets() which re-renders.
+  // We need to drop from queue *before* the API call to keep the UI honest if the
+  // caller cancels the modal — but the modal cancel just closes it, so we drop on success.
+  const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+  const fromStation = set.station?.number ? `Station ${set.station.number}` : null;
+
+  showConfirmModal({
+    title: '▶ Send to Stream',
+    message: `Send <strong>${nA} vs ${nB}</strong> to <strong>${stream.streamName}</strong>?` +
+      (fromStation
+        ? `<br><br>This will free up <strong>${fromStation}</strong>, ping the players in Discord, and remove this match from the queue.`
+        : '<br><br>Players will be pinged in Discord. This match will be removed from the queue.'),
+    variant: 'info',
+    buttons: [{
+      label: `Yes — send to ${stream.streamName}`,
+      sublabel: fromStation ? `Frees ${fromStation}` : 'Sends Discord ping',
+      variant: 'info',
+      icon: '🎥',
+      onClick: async () => {
+        // Drop from queue first so re-renders don't show it twice
+        streamQueues[sid] = streamQueues[sid].filter(x => String(x) !== String(setId));
+        saveStreamQueues();
+        await moveToStream(setId, stream.id, stream.streamName);
+      },
+    }],
+  });
+}
+
+function toggleAddQueuePanel(streamId) {
+  const sid = String(streamId);
+  if (_expandedAddQueues.has(sid)) _expandedAddQueues.delete(sid);
+  else _expandedAddQueues.add(sid);
+  renderStreamQueue();
+}
+
+// ─── Renderer ───
+
 function renderStreamQueue() {
   const el = document.getElementById('streamQueueSlots');
   if (!el) return;
@@ -1637,45 +1846,97 @@ function renderStreamQueue() {
     return;
   }
 
-  // Active sets that could be moved to stream — anything currently called or
-  // in progress on a station, sorted by stream score (closer seeds = better).
-  const candidates = activeSetsData
-    .filter(s => (s.state === 2 || s.state === 6) && !s.stream?.id) // not already on a stream
-    .slice()
+  // Clean up dead queue entries before rendering
+  cleanStreamQueues();
+
+  // Build a Set of all setIds currently queued anywhere — used to filter the candidate pool
+  const allQueuedIds = new Set();
+  for (const sid of Object.keys(streamQueues)) {
+    for (const id of streamQueues[sid]) allQueuedIds.add(String(id));
+  }
+
+  // Apply the same phase-group filter that auto-assign uses, so disabled pools
+  // never appear in the candidate picker. Empty filter = all pools allowed.
+  const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
+  const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const inAllowedPool = (s) => {
+    if (!pgAllowed.length) return true;
+    return pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed));
+  };
+
+  // Candidate pool: CALLED (state 6) + PENDING uncalled matches (state 1, both
+  // entrants known) — anything ready or queued-up at the bracket level.
+  // In-progress sets (state 2) are excluded. Restricted to enabled pools.
+  const candidatePool = [...activeSetsData.filter(s => s.state === 6), ...pendingSetsData]
+    .filter(s => !s.stream?.id)
+    .filter(s => !allQueuedIds.has(String(s.id)))
+    .filter(inAllowedPool)
     .sort((a, b) => getStreamScore(a) - getStreamScore(b));
 
-  // Build candidates HTML once — reused under each empty stream slot
-  const buildCandidatesFor = (streamId, streamName) => {
-    if (!candidates.length) {
-      return `<div style="font-size:0.7rem;color:var(--muted);padding:6px 0;text-align:center;">No active matches available to send to stream.</div>`;
-    }
-    return candidates.slice(0, 6).map(set => {
-      const a = set.slots[0]?.entrant?.name || '?';
-      const b = set.slots[1]?.entrant?.name || '?';
-      const sA = set.slots[0]?.seed?.seedNum, sB = set.slots[1]?.seed?.seedNum;
-      const score = getStreamScore(set);
-      const grade = streamGrade(score);
-      const fromStation = set.station?.number ? `Station ${set.station.number}` : 'unassigned';
-      const round = set.fullRoundText || '';
-      const escName = streamName.replace(/'/g, "\\'");
-      return `<div class="cand-row" onclick="requestMoveToStream('${set.id}', '${streamId}', '${escName}')" title="Click to send to ${streamName}">
-        <div class="cand-info">
-          <div class="cand-players">${a} <span style="color:var(--muted);font-weight:400;">vs</span> ${b}</div>
-          <div class="cand-meta">${round} · ${fromStation}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}</div>
-        </div>
-        <div class="cand-grade">${grade || ''}</div>
-      </div>`;
-    }).join('');
+  const buildCandidateRow = (set, streamId, streamName) => {
+    const a = set.slots[0]?.entrant?.name || '?';
+    const b = set.slots[1]?.entrant?.name || '?';
+    const sA = set.slots[0]?.seed?.seedNum, sB = set.slots[1]?.seed?.seedNum;
+    const score = getStreamScore(set);
+    const grade = streamGrade(score);
+    const stateLbl = set.state === 1 ? 'pending' : set.state === 2 ? 'in progress' : 'called';
+    const fromStation = set.station?.number ? `Station ${set.station.number}` : stateLbl;
+    const round = set.fullRoundText || '';
+    const escName = String(streamName).replace(/'/g, "\\'");
+    return `<div class="cand-row" onclick="addToStreamQueue('${set.id}', '${streamId}')" title="Add to ${streamName} queue">
+      <div class="cand-info">
+        <div class="cand-players">${a} <span style="color:var(--muted);font-weight:400;">vs</span> ${b}</div>
+        <div class="cand-meta">${round} · ${fromStation}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}</div>
+      </div>
+      <div class="cand-grade">${grade || ''}</div>
+    </div>`;
+  };
+
+  const buildQueueItem = (setId, streamId, idx, queueLen, streamIsLive) => {
+    const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
+                pendingSetsData.find(s => String(s.id) === String(setId)) ||
+                allFetchedSets.find(s => String(s.id) === String(setId));
+    if (!set) return '';
+    const a = set.slots[0]?.entrant?.name || '?';
+    const b = set.slots[1]?.entrant?.name || '?';
+    const round = set.fullRoundText || '';
+    const stateLbl = set.state === 1 ? 'pending' : set.state === 2 ? 'in progress' : 'called';
+    const fromStation = set.station?.number ? `Station ${set.station.number}` : stateLbl;
+    const isHead = idx === 0;
+    const sendBtn = isHead && !streamIsLive
+      ? `<button class="qi-btn send" onclick="event.stopPropagation();promoteFromQueue('${streamId}')" title="Send to stream now">▶ SEND</button>`
+      : isHead && streamIsLive
+        ? `<button class="qi-btn send" disabled title="Stream is busy — remove current match first">▶ SEND</button>`
+        : '';
+    return `<div class="queue-item ${isHead ? 'head' : ''}">
+      <div class="qi-pos">${idx + 1}</div>
+      <div class="qi-info">
+        <div class="qi-players">${a} <span style="color:var(--muted);font-weight:400;">vs</span> ${b}</div>
+        <div class="qi-meta">${round} · ${fromStation}</div>
+      </div>
+      <div class="qi-controls">
+        ${sendBtn}
+        <button class="qi-btn" onclick="moveInStreamQueue('${setId}', '${streamId}', -1)" ${idx === 0 ? 'disabled' : ''} title="Move up">▲</button>
+        <button class="qi-btn" onclick="moveInStreamQueue('${setId}', '${streamId}', 1)" ${idx === queueLen - 1 ? 'disabled' : ''} title="Move down">▼</button>
+        <button class="qi-btn danger" onclick="removeFromStreamQueue('${setId}', '${streamId}')" title="Remove from queue">✕</button>
+      </div>
+    </div>`;
   };
 
   el.innerHTML = streamList.map(stream => {
-    const occupant = activeSetsData.find(s => String(s.stream?.id) === String(stream.id) && (s.state === 2 || s.state === 6));
+    const sid = String(stream.id);
+    const queue = streamQueues[sid] || [];
+    const occupant = activeSetsData.find(s => String(s.stream?.id) === sid && (s.state === 2 || s.state === 6));
+    const escName = String(stream.streamName).replace(/'/g, "\\'");
+
+    // ─ LIVE NOW section ─
+    let liveSection;
     if (occupant) {
       const a = occupant.slots[0]?.entrant?.name || '?';
       const b = occupant.slots[1]?.entrant?.name || '?';
       const round = occupant.fullRoundText || '';
       const stateLbl = occupant.state === 2 ? 'IN PROGRESS' : 'CALLED';
-      return `<div class="stream-slot live">
+      liveSection = `<div class="stream-slot live">
         <div class="ss-head">
           <div class="ss-name">🎥 ${stream.streamName}</div>
           <div class="ss-status">${stateLbl}</div>
@@ -1686,17 +1947,39 @@ function renderStreamQueue() {
           <button class="ss-mini-btn danger" onclick="pullFromStream('${occupant.id}')">⏏ Remove from stream</button>
         </div>
       </div>`;
+    } else {
+      liveSection = `<div class="stream-slot empty">
+        <div class="ss-head">
+          <div class="ss-name">🎥 ${stream.streamName}</div>
+          <div class="ss-status">EMPTY</div>
+        </div>
+        <div class="ss-match-meta" style="margin-top:6px;">No match currently on stream${queue.length ? ' — click ▶ SEND on the head of the queue to promote.' : '.'}</div>
+      </div>`;
     }
-    // Empty slot — show candidates inline
-    return `<div class="stream-slot empty">
-      <div class="ss-head">
-        <div class="ss-name">🎥 ${stream.streamName}</div>
-        <div class="ss-status">EMPTY</div>
+
+    // ─ QUEUE section ─
+    const queueHtml = queue.length
+      ? queue.map((id, i) => buildQueueItem(id, sid, i, queue.length, !!occupant)).join('')
+      : `<div class="empty-queue-msg">Queue is empty — add matches below.</div>`;
+
+    // ─ ADD-TO-QUEUE section (collapsible) ─
+    const isExpanded = _expandedAddQueues.has(sid);
+    const candHtml = candidatePool.length
+      ? candidatePool.map(set => buildCandidateRow(set, sid, escName)).join('')
+      : `<div class="empty-queue-msg">No matches available to queue right now.</div>`;
+    const addSection = `<button class="add-queue-toggle" onclick="toggleAddQueuePanel('${sid}')">
+      ${isExpanded ? '▲ Hide' : '+ Add match to queue'} ${candidatePool.length && !isExpanded ? `<span style="color:var(--blue);">(${candidatePool.length} available)</span>` : ''}
+    </button>
+    ${isExpanded ? `<div class="add-queue-list">${candHtml}</div>` : ''}`;
+
+    return `<div style="margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border);">
+      ${liveSection}
+      <div class="stream-section-label">
+        <span>Up Next Queue</span>
+        <span class="ssl-count">${queue.length} queued</span>
       </div>
-      <div class="candidate-list">
-        <h5>Send to this stream:</h5>
-        ${buildCandidatesFor(stream.id, stream.streamName)}
-      </div>
+      ${queueHtml}
+      ${addSection}
     </div>`;
   }).join('');
 }
@@ -1729,7 +2012,10 @@ function renderPlayerHub() {
 
     const a = set.slots[0]?.entrant, b = set.slots[1]?.entrant;
     const nameA = a?.name || '???', nameB = b?.name || '???';
-    const loc = set.station?.number ? `Station ${set.station.number}` : set.stream?.streamName ? `Stream ${set.stream.streamName}` : 'No Location';
+    const onStream = !!set.stream?.streamName;
+    const streamName = set.stream?.streamName || '';
+    const stationLabel = set.station?.number ? `Station ${set.station.number}` : '';
+    const loc = onStream ? `📺 ON STREAM · ${streamName}` : (stationLabel || 'No Location');
     const escA = nameA.replace(/'/g, "\'"), escB = nameB.replace(/'/g, "\'");
 
     if (set.state === 6) {
@@ -1738,6 +2024,13 @@ function renderPlayerHub() {
       const nowSec = Math.floor(Date.now() / 1000);
       const isExpired = (nowSec - callTime) / 60 >= DQ_MINUTES;
       const autoDqOn = document.getElementById('autoDqToggle')?.checked !== false;
+
+      // On-stream sets get a blue accent and a clearer label instead of the
+      // standard "Called · Station X" red treatment, so it's immediately obvious
+      // they've been moved to stream.
+      const accentVar = onStream ? 'var(--blue)' : 'var(--accent2)';
+      const headerLabel = onStream ? loc : `Called · ${loc}`;
+      const cardBg = onStream ? 'rgba(114,137,218,0.06)' : 'var(--bg)';
 
       // Handle Manual DQ Fallback Layout
       if (isExpired && !autoDqOn) {
@@ -1756,10 +2049,10 @@ function renderPlayerHub() {
 
       const brdA = ciA ? 'var(--accent)' : 'rgba(255,255,255,0.1)', bgA = ciA ? 'rgba(0,229,160,0.2)' : 'rgba(255,255,255,0.04)', clA = ciA ? 'var(--accent)' : 'var(--text)';
       const brdB = ciB ? 'var(--accent)' : 'rgba(255,255,255,0.1)', bgB = ciB ? 'rgba(0,229,160,0.2)' : 'rgba(255,255,255,0.04)', clB = ciB ? 'var(--accent)' : 'var(--text)';
-      return `<div style="height:${CARD_H};background:var(--bg);border:2px solid var(--accent2);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;">
+      return `<div style="height:${CARD_H};background:${cardBg};border:2px solid ${accentVar};border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
-          <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:0.5px;">Called &middot; ${loc}</span>
-          <span style="font-size:0.72rem;font-weight:700;color:var(--accent2);">DQ:&nbsp;<span class="dq-timer-display" data-time="${callTime}">0:00</span></span>
+          <span style="font-size:0.72rem;font-weight:700;color:${accentVar};text-transform:uppercase;letter-spacing:0.5px;">${headerLabel}</span>
+          <span style="font-size:0.72rem;font-weight:700;color:${accentVar};">DQ:&nbsp;<span class="dq-timer-display" data-time="${callTime}">0:00</span></span>
         </div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);flex-shrink:0;">Players checked in:</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;">
@@ -1778,9 +2071,12 @@ function renderPlayerHub() {
     }
 
     if (set.state === 2) {
-      return `<div style="height:${CARD_H};background:var(--bg);border:2px solid var(--accent);border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between;gap:10px;">
+      const accentVar = onStream ? 'var(--blue)' : 'var(--accent)';
+      const headerLabel = onStream ? loc : `In Progress · ${loc}`;
+      const cardBg = onStream ? 'rgba(114,137,218,0.06)' : 'var(--bg)';
+      return `<div style="height:${CARD_H};background:${cardBg};border:2px solid ${accentVar};border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between;gap:10px;">
         <div style="flex-shrink:0;">
-          <div style="font-size:0.7rem;color:var(--accent);font-family:'Space Mono',monospace;margin-bottom:6px;">In Progress &middot; ${loc}</div>
+          <div style="font-size:0.7rem;color:${accentVar};font-family:'Space Mono',monospace;margin-bottom:6px;font-weight:700;">${headerLabel}</div>
           <div style="font-size:1rem;font-weight:800;line-height:1.3;word-break:break-word;">${nameA} <span style="color:var(--muted);font-weight:400;">vs</span> ${nameB}</div>
         </div>
         <button onclick="openScoreOverlay('${set.id}','${a?.id}','${b?.id}','${escA}','${escB}','${loc}')"
@@ -1954,10 +2250,11 @@ renderLog();
 // functions out of `window`. Inline `onclick=`/`onchange=` handlers can only see globals,
 // so we explicitly publish every inline-handler-callable function here.
 Object.assign(window, {
-  browseEvents, callSetFromPanel, clearPhaseFilter, closeConfirmModal, closeScoreOverlay,
-  copyPollLog, fetchAndPopulateStreams, fetchManualSets, hubToggleWatch, loadCSV,
-  loadPhaseGroups, manualLink, markInProgressQuick, openScoreOverlay, pullFromStream,
+  addToStreamQueue, browseEvents, callSetFromPanel, clearPhaseFilter, closeConfirmModal,
+  closeScoreOverlay, copyPollLog, fetchAndPopulateStreams, fetchManualSets, hubToggleWatch,
+  loadCSV, loadPhaseGroups, manualLink, markInProgressQuick, moveInStreamQueue,
+  openScoreOverlay, promoteFromQueue, pullFromStream, removeFromStreamQueue,
   renderManualSets, requestDQ, requestHubDQ, requestMoveToStream, resetMatch,
   savePriorityStream, saveSettings, setScore, startPolling, stopPolling,
-  submitOverlayScore, switchTab, toggleHubCheckin, toggleSetup
+  submitOverlayScore, switchTab, toggleAddQueuePanel, toggleHubCheckin, toggleSetup
 });
