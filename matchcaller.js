@@ -3,6 +3,10 @@
 // ─────────────────────────────────────────────────────────────
 let players = [], tagMap = new Map(), matchLog = [], pollTimer = null;
 let announcedSetIds = new Set(), completedSetIds = new Set(), pollLogEntries = [];
+// Tracks setIds we've already pinged Discord about for stream assignments,
+// so external moves get pinged exactly once and our own moveToStream calls
+// pre-populate this to avoid double-pings on the next poll.
+let streamAnnouncedSetIds = new Set();
 let activeSetsData = [], pendingSetsData = [], allFetchedSets = [];
 let stationList = [], streamList = [];
 let hubCheckins = new Set();
@@ -833,6 +837,10 @@ async function moveToStream(setId, streamId, streamName) {
   // show it as available
   const previousStationId = set.station?.id;
 
+  // Mark this assignment as already announced — the next poll will see the
+  // stream assignment in start.gg's data and we don't want to double-ping.
+  streamAnnouncedSetIds.add(String(setId));
+
   try {
     await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
     // start.gg keeps the station assignment around when you assign a stream;
@@ -858,6 +866,9 @@ async function moveToStream(setId, streamId, streamName) {
     // Re-render everything that depends on stream/station state
     fetchManualSets();
   } catch (e) {
+    // Roll back the optimistic announce-marker so a future successful
+    // assignment (manual retry or external) can still ping.
+    streamAnnouncedSetIds.delete(String(setId));
     toast(`✗ Move to stream failed: ${e.message}`, true);
     addPollLog(`⚠️ moveToStream(${setId} → ${streamId}) failed: ${e.message}`, 'err');
   }
@@ -916,6 +927,8 @@ async function pullFromStream(setId) {
             const oldStreamId = set.stream?.id;
             set.stream = null;
             if (oldStreamId) recentlyAssignedLocs.delete(String(oldStreamId));
+            // Allow this set to be re-announced if it gets put back on stream later
+            streamAnnouncedSetIds.delete(String(setId));
             toast('⏏ Pulled from stream');
             addPollLog(`⏏ Pulled set ${setId} from stream`, 'new');
             fetchManualSets();
@@ -1258,6 +1271,55 @@ async function doPoll() {
       }
     }
 
+    // 1.5 EXTERNAL STREAM-ASSIGNMENT DETECTOR — when a set has been pushed to
+    // a stream by something outside this matchcaller (TSH, start.gg admin UI,
+    // another TO's tool), treat it as a reassignment: lock the new stream,
+    // free the old station, and ping Discord exactly once. moveToStream
+    // pre-populates streamAnnouncedSetIds so our own moves don't double-ping.
+    for (const set of allSets) {
+      if (!set.stream?.id) continue;
+      // Only consider sets in actionable states — stream pre-assignments on
+      // pending sets get handled when they advance to called/in-progress.
+      if (set.state !== 2 && set.state !== 6) continue;
+
+      const sid = String(set.id);
+      const streamId = String(set.stream.id);
+
+      // Always idempotently keep locks in sync with the source of truth.
+      // Stream stays locked, station gets freed (matches moveToStream's logic
+      // since start.gg leaves the station assignment in place when streaming).
+      recentlyAssignedLocs.set(streamId, Date.now());
+      if (set.station?.id) {
+        recentlyAssignedLocs.delete(String(set.station.id));
+      }
+
+      // First-time detection: ping Discord and log
+      if (!streamAnnouncedSetIds.has(sid)) {
+        streamAnnouncedSetIds.add(sid);
+        const wasCalled = set.state === 6;
+        const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+        const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+        const ping = buildStreamMovePing({
+          mA, mB,
+          streamLabel: set.stream.streamName,
+          roundText: set.fullRoundText,
+        });
+        try { await sendWebhook(ping.content); } catch (e) {}
+        logMatch(nA, nB, `🎥 ${set.stream.streamName}`, 'stream-ext', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum, ping.shiny);
+        addPollLog(`${ping.shiny ? '✨ SHINY' : '📺'} Ext. Stream ${wasCalled ? 'Reassignment' : 'Assignment'}: ${nA} vs ${nB} → 🎥 ${set.stream.streamName}`, 'new');
+        if (ping.shiny) toast('✨ SHINY STREAM PROMOTION! 1/8192');
+        pingCount++;
+      }
+    }
+
+    // Drop sets from streamAnnouncedSetIds once they're no longer streamed —
+    // so re-streaming the same set later (after a pull or completion) pings
+    // again. Garbage-collected against current state.
+    const currentlyStreamed = new Set(allSets.filter(s => s.stream?.id).map(s => String(s.id)));
+    for (const sid of [...streamAnnouncedSetIds]) {
+      if (!currentlyStreamed.has(sid)) streamAnnouncedSetIds.delete(sid);
+    }
+
     // 2. AUTO-ASSIGN — STATIONS ONLY. Streams are filled manually via the
     // Stream Queue in the Player Hub. Auto-assign never picks streams now.
     if (autoOn && pendingSetsData.length > 0 && availableStations.length > 0) {
@@ -1363,6 +1425,16 @@ async function startPolling() {
   document.getElementById('autoBadge').style.display = 'inline-flex';
   document.getElementById('autoMeta').textContent = 'Watching for sets called on any device…';
   document.getElementById('manualAutoBar').style.display = 'flex';
+
+  // Pre-populate streamAnnouncedSetIds with currently-streaming sets so that
+  // resuming polling after a pause doesn't spam pings for matches that have
+  // been on stream for a while. New stream assignments after this point still
+  // ping normally.
+  for (const s of allFetchedSets) {
+    if (s.stream?.id && (s.state === 2 || s.state === 6)) {
+      streamAnnouncedSetIds.add(String(s.id));
+    }
+  }
 
   // Apply the same filters as auto-assign before forcing a start.gg call
   let validPending = pendingSetsData || [];
