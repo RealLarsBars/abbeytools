@@ -1326,11 +1326,26 @@ async function doPoll() {
         try {
           const qData = await sggQuery(`query { streamQueue(tournamentId: ${tourney.id}) { stream { id } sets { id } } }`);
           const officialQueues = qData?.data?.streamQueue || [];
-          // Update local streamQueues to match start.gg exactly
+
+          // start.gg's streamQueue field returns EVERY set that has a stream
+          // assigned, including the one that's currently live on it (state 2/6).
+          // Locally we only want pending sets in the queue — live sets are
+          // tracked separately as "on stream right now". Without this filter,
+          // the live set perpetually re-appears in the local queue every poll,
+          // which (a) makes our `isQueuedHere` check fire when it shouldn't and
+          // (b) breaks any "remove from queue" the live-path logic just did.
+          const liveSetIds = new Set(
+            allSets
+              .filter(s => s.state === 2 || s.state === 6)
+              .map(s => String(s.id))
+          );
+
           const newQueues = {};
           for (const q of officialQueues) {
             if (q.stream?.id) {
-              newQueues[String(q.stream.id)] = (q.sets || []).map(s => String(s.id));
+              newQueues[String(q.stream.id)] = (q.sets || [])
+                .map(s => String(s.id))
+                .filter(setId => !liveSetIds.has(setId));
             }
           }
           // Merge logic: only overwrite if start.gg has data for that stream.
