@@ -7,6 +7,9 @@ let announcedSetIds = new Set(), completedSetIds = new Set(), pollLogEntries = [
 // so external moves get pinged exactly once and our own moveToStream calls
 // pre-populate this to avoid double-pings on the next poll.
 let streamAnnouncedSetIds = new Set();
+// Tracks setIds we've already sent a "you're in the queue" ping for, so
+// reordering or queue-state churn doesn't cause repeat pings.
+let queuePingedSetIds = new Set();
 let activeSetsData = [], pendingSetsData = [], allFetchedSets = [];
 let stationList = [], streamList = [];
 let hubCheckins = new Set();
@@ -28,7 +31,7 @@ function loadStreamQueues() {
   } catch { streamQueues = {}; }
 }
 function saveStreamQueues() {
-  try { localStorage.setItem('abbey_stream_queues', JSON.stringify(streamQueues)); } catch {}
+  try { localStorage.setItem('abbey_stream_queues', JSON.stringify(streamQueues)); } catch { }
 }
 loadStreamQueues();
 
@@ -143,18 +146,20 @@ function hubToggleWatch() {
 }
 
 function updateHubWatchBtn() {
-  const btn = document.getElementById('hubWatchBtn');
-  if (!btn) return;
-  if (pollTimer) {
-    btn.textContent = '■ Stop Watching';
-    btn.style.background = 'var(--accent2)';
-    btn.style.borderColor = 'var(--accent2)';
-    btn.style.color = '#fff';
-  } else {
-    btn.textContent = '▶ Start Watching';
-    btn.style.background = 'var(--accent)';
-    btn.style.borderColor = 'var(--accent)';
-    btn.style.color = '#0d0f12';
+  for (const id of ['hubWatchBtn', 'streamWatchBtn']) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    if (pollTimer) {
+      btn.textContent = '■ Stop Watching';
+      btn.style.background = 'var(--accent2)';
+      btn.style.borderColor = 'var(--accent2)';
+      btn.style.color = '#fff';
+    } else {
+      btn.textContent = '▶ Start Watching';
+      btn.style.background = 'var(--accent)';
+      btn.style.borderColor = 'var(--accent)';
+      btn.style.color = '#0d0f12';
+    }
   }
 }
 
@@ -179,6 +184,8 @@ function saveSettings() {
   const event = document.getElementById('sggEvent').value.trim();
   if (event) localStorage.setItem('abbey_sgg_event', event);
   localStorage.setItem('abbey_auto_assign', document.getElementById('autoAssignToggle')?.checked ? '1' : '0');
+  localStorage.setItem('abbey_auto_stream_assign', document.getElementById('autoStreamAssignToggle')?.checked ? '1' : '0');
+  localStorage.setItem('abbey_stream_station_id', document.getElementById('streamStationId')?.value || '');
   localStorage.setItem('abbey_bypass_phase', '0');
 
   const adqInput = document.getElementById('autoDqToggle');
@@ -205,6 +212,9 @@ function loadSettings() {
   document.getElementById('sggEvent').value = get('abbey_sgg_event');
   const at = document.getElementById('autoAssignToggle');
   if (at) at.checked = get('abbey_auto_assign') === '1';
+
+  const asa = document.getElementById('autoStreamAssignToggle');
+  if (asa) asa.checked = get('abbey_auto_stream_assign') !== '0';
 
 
   const adq = document.getElementById('autoDqToggle');
@@ -248,10 +258,10 @@ function updateFilterBar() {
 // Tabs
 // ─────────────────────────────────────────────────────────────
 function switchTab(name) {
-  const tabs = ['manual', 'auto', 'hub'];
+  const tabs = ['manual', 'auto', 'stream', 'hub'];
   document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', tabs[i] === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
-  if (name === 'hub' || name === 'manual') fetchManualSets();
+  if (name === 'hub' || name === 'manual' || name === 'stream') fetchManualSets();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -494,6 +504,23 @@ async function loadPhaseGroups() {
       }
       container.appendChild(row);
     }
+
+    // Populate Stream Station dropdown
+    const stnSelect = document.getElementById('streamStationId');
+    if (stnSelect) {
+      const savedStn = localStorage.getItem('abbey_stream_station_id') || '';
+      const stations = await sggQuery(`query { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } } } }`);
+      const nodes = stations?.data?.event?.tournament?.stations?.nodes || [];
+      stnSelect.innerHTML = '<option value="">None (Use stream only)</option>';
+      for (const stn of nodes.sort((a, b) => a.number - b.number)) {
+        const opt = document.createElement('option');
+        opt.value = String(stn.id);
+        opt.textContent = `Station ${stn.number}`;
+        opt.selected = String(stn.id) === savedStn;
+        stnSelect.appendChild(opt);
+      }
+    }
+
     btn.textContent = '↻ Refresh';
     updateFilterBar();
     renderHubChips();
@@ -526,177 +553,190 @@ async function sendWebhook(content) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Ping flair — maximum cringe + 1/8192 shiny easter egg
+// Ping flair — normal default with 1% cringe roll, 1/8192 shiny
 // ─────────────────────────────────────────────────────────────
-const PING_INTROS = [
+
+// CRINGE_RATE: chance any single ping rolls the cringe template instead of the
+// normal one. Set to 0 to disable entirely. Currently 1% — once or twice per
+// large tournament. The cringe template is the only one that signs off as LarsBars.
+const CRINGE_RATE = 0.01;
+
+// Cringe pool — kept around as an easter egg. Only fires CRINGE_RATE of the time.
+const PING_INTROS_CRINGE = [
   '🥺 pwease come pway 🥺',
   '👉👈 hewwo your match is wittle bit weady',
   '✨💖 hey besties 💖✨ match time!',
   'OMG ROUND TWO?!?!?! 🎀🎀🎀',
-  '📢 the bracket has summoned thee, mortal',
-  '🎀 mood: bracket called 💅',
   '💀 not me having to call you 💀',
   '✨ slay queens (and kings) ✨ time to throw',
   '🤓☝️ um actually your match is up',
-  '🫡 reporting for ✨combat✨',
   '💗💗 hi besties guess what 💗💗',
-  '🤪 lol bestie ur match is goofy ahh up',
   'fr fr no cap your match is called 🧢',
-  '✨ plot twist ✨ bracket said it\'s your turn',
   '🥹 it\'s giving... your match. it\'s giving your match.',
   'skibidi bracket wants u 😎',
   'rizz check: you up 🫦',
   'POV: you opened discord and saw this 📲',
   '🎀 bestie ur match called and i fear u must answer 🎀',
-  '🫶 the bracket loves u (also it called u) 🫶',
   '👁️👄👁️ ur match. it\'s here.',
   '🍃🍃 babe wake up new match dropped 🍃🍃',
   'periodt 💅 ur match is called',
-  '🛎️ Bracket says hi',
-  '👀 Look alive',
-  '🫵 You. Match. Now.',
-  '⚠️ Phone down. Controller up.',
 ];
-const PING_DIRECTIONS = [
+const PING_DIRECTIONS_CRINGE = [
   '🚶 walk your wittle wegs to the TO area uwu',
   '🪜 those stairs aren\'t gonna climb themselves bestie',
   '✨ teleport to the TO desk ✨ (jk just walk)',
-  '👣 leave footprints in the direction of: upstairs',
   '🛗 imaginary elevator to the TO area is broken 💔 take stairs queen',
   '🦵 LEG DAY 💪 stairs to TO area, let\'s gooo',
-  '📍 the TO area is upstairs no it\'s not in your phone bestie',
-  '🚶 TO area is upstairs. We know stairs are hard.',
-  '🪜 manifest yourself at the top of the stairs ✨',
   '🥾 hike up to the TO area like the main character u are',
-  '🛗 upstairs is where the magic happens (and the check-in desk)',
-  '👆 up there. yeah there. where the adults are. check in.',
 ];
-const PING_WARNINGS = [
+const PING_WARNINGS_CRINGE = [
   '💀 don\'t be mid, be ON TIME (<t:%t:t>) bestie or get that L (<t:%t:R>)',
   '⏰ <t:%t:t> ✨ deadline ✨ or you\'re getting that L tier behavior (<t:%t:R>)',
-  '😭 <t:%t:t> or you simply must accept the DQ (<t:%t:R>)',
   '🤡 don\'t be the clown who DQs themselves <t:%t:t> (<t:%t:R>)',
   '📵 <t:%t:t> bestie or it\'s a ✨skill issue✨ (<t:%t:R>)',
   '🪦 RIP your bracket run if you\'re not there by <t:%t:t> (<t:%t:R>)',
-  '💅 the giving up window closes <t:%t:t> (<t:%t:R>)',
-  '😬 <t:%t:t> or you\'re NOT the moment (<t:%t:R>)',
-  '🫠 don\'t melt under pressure — <t:%t:t> (<t:%t:R>)',
-  '⏳ <t:%t:R> until you become a cautionary tale (<t:%t:t>)',
-  '🐢 Slow rolling? <t:%t:t> deadline (<t:%t:R>). Move it.',
-  '🚪 Doors close <t:%t:t> (<t:%t:R>). Don\'t get locked out.',
   '👻 ghost the bracket by <t:%t:t> = automatic L (<t:%t:R>)',
 ];
-// Generic stream-move pool. The function injects ${streamLabel} via the
-// directive line below, so these intros stay neutral about which stream.
-const PING_STREAM_MOVE = [
+const PING_QUEUE_CRINGE = [
+  '🎀 OMG bestie u just got slotted into the stream queue 🎀',
+  '✨ u in the stream queue now ✨ act surprised on camera',
+  '📺 stream said: \'we want u\' (eventually) 💗',
+  '🥺 ur in line for stream, pls don\'t leave the venue uwu',
+];
+const PING_STREAM_MOVE_CRINGE = [
   '📺 babe wake up new stream slot just dropped 🛏️',
   '🎀 stream is feeling generous today, you got promoted 🎀',
   '✨💖 yass queen STREAM TIME 💖✨',
   '📺 not me putting you on stream 💀',
-  '🥺👉👈 we want to put you on stream pwease come',
-  'OMG IT\'S YOUR STREAM ERA 🎀✨',
-  '📺 bestie ur on stream now, don\'t be cringe (im allowed to say it not u)',
   '🤳 caught in 4k now bestie',
-  '🎬 lights camera ✨ya✨ that\'s u',
-  '📡 Broadcast incoming. That\'s you, pal.',
-  '🍿 The people demand entertainment. Provide it.',
-  '🎥 You\'re on TV now. Behave.',
-  '🪩 Spotlight\'s warm. Get in it.',
   'POV: ur about to be a clip 🎬',
   'main character energy unlocked 🌟 stream incoming',
-  '✨ stream said you\'re the moment ✨',
-];
-// SFMelee main stream gets its own pool — heavy hype + heavy cringe.
-const PING_STREAM_MOVE_SFMELEE = [
-  '📺💎 BABE. SFMELEE. WAKE UP. 💎📺',
-  '✨ pov: u just got the SFMelee stream call ✨',
-  '🎀 SFMelee era unlocked 🎀 don\'t blow it queen',
-  '📺 SFMelee said \'we love this for them\' 💗',
-  '💀 SFMelee chose violence (you, on camera)',
-  '🌟 SFMelee said: it\'s giving star quality. it\'s you. it\'s giving you.',
-  '✨ canonical event: u on SFMelee ✨',
-  '👑 SFMelee crowned u for being the moment 👑',
-  '📺💎 You\'ve been promoted to **the SFMelee stream**. Don\'t blow it.',
-  '🌉 Welcome to the big show. **SFMelee** is calling.',
-  '🎬 Main stage time — **SFMelee** wants you on camera',
-  '🍿 Alright superstar, **SFMelee** stream needs you',
-  '🎙️ **SFMelee** main stream. The crown jewel. You. Now.',
-  '👑 Bay Area\'s eyes are on you now. **SFMelee** stream awaits.',
-  '📺 SFMelee picked u and i think that\'s beautiful 🥹',
-  '✨ rizz the SFMelee camera bestie ✨',
 ];
 
+// ─── Normal templates — single fixed wording per slot ───
+function buildNormalCallPing({ mA, mB, loc, roundText, dqTimestamp }) {
+  return (
+    `📢 **Set called** — ${mA} vs ${mB}\n` +
+    `📍 **${loc}** *(${roundText})*\n` +
+    `🪜 Head to the TO area upstairs to check in.\n` +
+    `⏰ Be there by <t:${dqTimestamp}:t> (<t:${dqTimestamp}:R>) or risk DQ.\n` +
+    `——————————————————`
+  );
+}
+
+function buildNormalQueuePing({ mA, mB, streamLabel, roundText }) {
+  return (
+    `🎬 **You're in the stream queue** — ${mA} vs ${mB}\n` +
+    `📺 Queued up for **${streamLabel}** *(${roundText})*\n` +
+    `Stay nearby and keep an eye on Discord — we'll ping again when you're called to the stream setup.\n` +
+    `——————————————————`
+  );
+}
+
+function buildNormalStreamCallPing({ mA, mB, streamLabel, roundText }) {
+  return (
+    `🎥 **You're up on stream** — ${mA} vs ${mB}\n` +
+    `📺 Head to the **${streamLabel}** setup now and get ready to play *(${roundText})*\n` +
+    `——————————————————`
+  );
+}
+
+// ─── Cringe templates — only fire CRINGE_RATE of the time ───
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function isSFMeleeStream(label) { return /sf\s*_*melee/i.test(String(label || '')); }
 
-// Mandatory sign-off — appended to every Discord ping.
 const PING_DISCLAIMER = `*My name is LarsBars and I don't approve this message.*`;
 
-// 1 in 8192 — Pokémon shiny odds. Once a tournament if you're lucky. Maybe.
-function rollShiny() { return Math.floor(Math.random() * 8192) === 0; }
+function buildCringeCallPing({ mA, mB, loc, roundText, dqTimestamp }) {
+  return (
+    `${pick(PING_INTROS_CRINGE)} — ${mA} vs ${mB} — ${loc} *(${roundText})*\n` +
+    `${pick(PING_DIRECTIONS_CRINGE)}\n` +
+    `${pick(PING_WARNINGS_CRINGE).replaceAll('%t', String(dqTimestamp))}\n` +
+    `——————————————————\n` +
+    `${PING_DISCLAIMER}`
+  );
+}
 
-// Builds a fully formed Discord message for a called match.
-// Returns { content, shiny } so callers can react to the rare event.
+function buildCringeQueuePing({ mA, mB, streamLabel, roundText }) {
+  return (
+    `${pick(PING_QUEUE_CRINGE)}\n` +
+    `${mA} vs ${mB} → 🎬 queued for **${streamLabel}** *(${roundText})*\n` +
+    `Don't wander off bestie ✨ we'll ping again when ur up\n` +
+    `——————————————————\n` +
+    `${PING_DISCLAIMER}`
+  );
+}
+
+function buildCringeStreamCallPing({ mA, mB, streamLabel, roundText }) {
+  return (
+    `${pick(PING_STREAM_MOVE_CRINGE)}: ${mA} vs ${mB} → **${streamLabel}** *(${roundText})*\n` +
+    `🎥 Get to the **${streamLabel}** setup and don't be cringe (we're allowed, you aren't)\n` +
+    `——————————————————\n` +
+    `${PING_DISCLAIMER}`
+  );
+}
+
+// 1 in 8192 — Pokémon shiny odds. Layered on top of normal/cringe selection,
+// independent. Shiny pings get the rarity callout regardless of which body was picked.
+function rollShiny() { return Math.floor(Math.random() * 8192) === 0; }
+function rollCringe() { return Math.random() < CRINGE_RATE; }
+
+// ─── Public ping builders — what the rest of the code calls ───
+// All three return { content, shiny } so the caller can react to rare events.
+
 function buildCallPing({ mA, mB, loc, roundText, dqTimestamp }) {
   const shiny = rollShiny();
-  const intro = pick(PING_INTROS);
-  const direction = pick(PING_DIRECTIONS);
-  const warning = pick(PING_WARNINGS).replaceAll('%t', String(dqTimestamp));
-
+  const cringe = rollCringe();
+  let body = cringe
+    ? buildCringeCallPing({ mA, mB, loc, roundText, dqTimestamp })
+    : buildNormalCallPing({ mA, mB, loc, roundText, dqTimestamp });
   if (shiny) {
-    // ✨ once-in-a-tournament shiny ping ✨
-    const content =
+    body =
       `✨🌟✨ **A SHINY MATCH APPEARED** ✨🌟✨\n` +
       `*(1 in 8192 odds — congrats, you witnessed the rarest ping the matchcaller can produce)*\n\n` +
-      `${intro} ${mA} vs ${mB} — ${loc} *(${roundText})*\n` +
-      `${direction}\n` +
-      `${warning}\n` +
-      `🌈 *This set is now part of Abbey Tavern lore.*\n` +
-      `——————————————————\n` +
-      `${PING_DISCLAIMER}`;
-    return { content, shiny: true };
+      body +
+      `\n🌈 *This set is now part of Abbey Tavern lore.*`;
   }
-
-  const content =
-    `${intro} — ${mA} vs ${mB} — ${loc} *(${roundText})*\n` +
-    `${direction}\n` +
-    `${warning}\n` +
-    `——————————————————\n` +
-    `${PING_DISCLAIMER}`;
-  return { content, shiny: false };
+  return { content: body, shiny };
 }
 
-function buildStreamMovePing({ mA, mB, streamLabel, roundText }) {
+function buildQueuePing({ mA, mB, streamLabel, roundText }) {
   const shiny = rollShiny();
-  const isSFMelee = isSFMeleeStream(streamLabel);
-  const intro = pick(isSFMelee ? PING_STREAM_MOVE_SFMELEE : PING_STREAM_MOVE);
-  // Always name the destination stream so sidestream calls aren't ambiguous.
-  const destination = isSFMelee
-    ? `🎥 Get to the **${streamLabel}** setup immediately. Cameras are rolling.`
-    : `🎥 Head to **${streamLabel}** and get ready to play.`;
-
+  const cringe = rollCringe();
+  let body = cringe
+    ? buildCringeQueuePing({ mA, mB, streamLabel, roundText })
+    : buildNormalQueuePing({ mA, mB, streamLabel, roundText });
   if (shiny) {
-    return {
-      content:
-        `✨🌟✨ **A SHINY STREAM PROMOTION** ✨🌟✨\n` +
-        `*(1/8192 — extremely rare flex)*\n\n` +
-        `${intro}: ${mA} vs ${mB} → **${streamLabel}** *(${roundText})*\n` +
-        `${destination}\n` +
-        `🌈 *Today is your day.*\n` +
-        `——————————————————\n` +
-        `${PING_DISCLAIMER}`,
-      shiny: true,
-    };
+    body =
+      `✨🌟✨ **A SHINY QUEUE PLACEMENT** ✨🌟✨\n` +
+      `*(1/8192 odds — extremely rare flex)*\n\n` +
+      body +
+      `\n🌈 *Today is your day.*`;
   }
-  return {
-    content:
-      `${intro}: ${mA} vs ${mB} → **${streamLabel}** *(${roundText})*\n` +
-      `${destination}\n` +
-      `——————————————————\n` +
-      `${PING_DISCLAIMER}`,
-    shiny: false,
-  };
+  return { content: body, shiny };
 }
+
+// Use this when actually calling someone TO the stream setup (queue head → live).
+function buildStreamCallPing({ mA, mB, streamLabel, roundText }) {
+  const shiny = rollShiny();
+  const cringe = rollCringe();
+  let body = cringe
+    ? buildCringeStreamCallPing({ mA, mB, streamLabel, roundText })
+    : buildNormalStreamCallPing({ mA, mB, streamLabel, roundText });
+  if (shiny) {
+    body =
+      `✨🌟✨ **A SHINY STREAM CALL** ✨🌟✨\n` +
+      `*(1/8192 odds — extremely rare flex)*\n\n` +
+      body +
+      `\n🌈 *Today is your day.*`;
+  }
+  return { content: body, shiny };
+}
+
+// Legacy alias — used to be called when we did "move to stream" as one operation.
+// Now structurally we have queue (buildQueuePing) and call (buildStreamCallPing).
+// Kept here so any outside reference still resolves.
+function buildStreamMovePing(args) { return buildStreamCallPing(args); }
 
 // ─────────────────────────────────────────────────────────────
 // Actions
@@ -1237,6 +1277,16 @@ async function doPoll() {
     for (const set of calledSets) {
       if (completedSetIds.has(String(set.id))) continue;
 
+      // If this set was added to a stream queue locally, skip the entire
+      // station ping flow. The queue ping has already been sent. When the TO
+      // promotes the queued set to stream, they'll get the Stream Call ping.
+      // We do NOT want the player getting both "you're queued for stream"
+      // AND "go to station 1" — that's contradictory and confusing.
+      if (isInAnyQueue(set.id)) {
+        announcedSetIds.add(String(set.id)); // mark as handled so it doesn't trigger later
+        continue;
+      }
+
       // Automatically assign a station if it was called externally without one.
       // NOTE: Only stations — never streams. Streams are handled manually via
       // the Stream Queue in the Player Hub.
@@ -1271,57 +1321,121 @@ async function doPoll() {
       }
     }
 
-    // 1.5 EXTERNAL STREAM-ASSIGNMENT DETECTOR — when a set has been pushed to
-    // a stream by something outside this matchcaller (TSH, start.gg admin UI,
-    // another TO's tool), treat it as a reassignment: lock the new stream,
-    // free the old station, and ping Discord exactly once. moveToStream
-    // pre-populates streamAnnouncedSetIds so our own moves don't double-ping.
+    // 1.5 EXTERNAL STREAM-ASSIGNMENT DETECTOR + AUTO-PROMOTION
+    //
+    // First, track which streams are currently occupied by a live set (state 2 or 6)
+    const occupiedStreamIds = new Set();
     for (const set of allSets) {
-      if (!set.stream?.id) continue;
-      // Only consider sets in actionable states — stream pre-assignments on
-      // pending sets get handled when they advance to called/in-progress.
-      if (set.state !== 2 && set.state !== 6) continue;
-
-      const sid = String(set.id);
-      const streamId = String(set.stream.id);
-
-      // Always idempotently keep locks in sync with the source of truth.
-      // Stream stays locked, station gets freed (matches moveToStream's logic
-      // since start.gg leaves the station assignment in place when streaming).
-      recentlyAssignedLocs.set(streamId, Date.now());
-      if (set.station?.id) {
-        recentlyAssignedLocs.delete(String(set.station.id));
-      }
-
-      // First-time detection: ping Discord and log
-      if (!streamAnnouncedSetIds.has(sid)) {
-        streamAnnouncedSetIds.add(sid);
-        const wasCalled = set.state === 6;
-        const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
-        const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
-        const ping = buildStreamMovePing({
-          mA, mB,
-          streamLabel: set.stream.streamName,
-          roundText: set.fullRoundText,
-        });
-        try { await sendWebhook(ping.content); } catch (e) {}
-        logMatch(nA, nB, `🎥 ${set.stream.streamName}`, 'stream-ext', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum, ping.shiny);
-        addPollLog(`${ping.shiny ? '✨ SHINY' : '📺'} Ext. Stream ${wasCalled ? 'Reassignment' : 'Assignment'}: ${nA} vs ${nB} → 🎥 ${set.stream.streamName}`, 'new');
-        if (ping.shiny) toast('✨ SHINY STREAM PROMOTION! 1/8192');
-        pingCount++;
+      if (set.stream?.id && (set.state === 2 || set.state === 6)) {
+        occupiedStreamIds.add(String(set.stream.id));
       }
     }
 
-    // Drop sets from streamAnnouncedSetIds once they're no longer streamed —
-    // so re-streaming the same set later (after a pull or completion) pings
-    // again. Garbage-collected against current state.
-    const currentlyStreamed = new Set(allSets.filter(s => s.stream?.id).map(s => String(s.id)));
+    for (const set of allSets) {
+      if (!set.stream?.id) continue;
+      const sid = String(set.id);
+      const streamId = String(set.stream.id);
+      const stream = streamList.find(s => String(s.id) === streamId) || { id: streamId, streamName: set.stream.streamName };
+
+      // Always idempotently keep locks in sync with the source of truth.
+      // (Active sets only — pending shouldn't lock a stream.)
+      if (set.state === 2 || set.state === 6) {
+        recentlyAssignedLocs.set(streamId, Date.now());
+        if (set.station?.id) recentlyAssignedLocs.delete(String(set.station.id));
+      }
+
+      if (set.state === 1) {
+        // PENDING — add to queue if not already queued, send queue ping (or
+        // wait for cleanup pass to ping when entrants resolve).
+        const existing = findQueueAssignment(set.id);
+        if (!existing || existing.streamId !== streamId) {
+          addToStreamQueue(set.id, streamId, { quiet: true });
+          addPollLog(`📋 Ext. Pre-Assigned: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (queued)`, 'new');
+          // Try to ping now if filled. cleanStreamQueues handles unfilled sets.
+          await sendQueuePingForSet(set, stream);
+        }
+      } else if (set.state === 2 || set.state === 6) {
+        // CALLED / IN-PROGRESS — check if the stream is busy.
+        const hasQueue = (streamQueues[streamId] || []).length > 0;
+        const someoneElseLive = allSets.some(s => s.stream?.id && String(s.stream.id) === streamId && String(s.id) !== sid && (s.state === 2 || s.state === 6));
+        const isQueuedHere = (streamQueues[streamId] || []).some(x => String(x) === sid);
+
+        if (!isQueuedHere && (hasQueue || someoneElseLive)) {
+          // Stream is busy! Move this set to the bottom of the queue instead of treating it as live.
+          // addToStreamQueue will automatically call resetSet and put it at the end.
+          addPollLog(`📋 Ext. Assigned: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (busy, moving to queue)`, 'new');
+          await addToStreamQueue(set.id, streamId, { quiet: true });
+          await sendQueuePingForSet(set, stream);
+          continue; 
+        }
+
+        // If we get here, the set is considered "Live" on the stream.
+        // Make sure it's not still sitting in any queue.
+        for (const otherSid of Object.keys(streamQueues)) {
+          if (streamQueues[otherSid].some(x => String(x) === sid)) {
+            streamQueues[otherSid] = streamQueues[otherSid].filter(x => String(x) !== sid);
+            saveStreamQueues();
+          }
+        }
+
+        // First-time detection: ping Discord and log.
+        if (!streamAnnouncedSetIds.has(sid)) {
+          streamAnnouncedSetIds.add(sid);
+          const wasCalled = set.state === 6;
+          const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+          const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+          const ping = buildStreamCallPing({
+            mA, mB,
+            streamLabel: stream.streamName,
+            roundText: set.fullRoundText,
+          });
+          try { await sendWebhook(ping.content); } catch (e) { }
+          logMatch(nA, nB, `🎥 ${stream.streamName}`, 'stream-ext', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum, ping.shiny);
+          addPollLog(`${ping.shiny ? '✨ SHINY' : '📺'} Ext. Stream ${wasCalled ? 'Call' : 'Assignment'}: ${nA} vs ${nB} → 🎥 ${stream.streamName}`, 'new');
+          if (ping.shiny) toast('✨ SHINY STREAM CALL! 1/8192');
+          pingCount++;
+        }
+      }
+    }
+
+    // AUTO-PROMOTE: If a stream is free and has a queue, promote the head.
+    for (const stream of streamList) {
+      const sid = String(stream.id);
+      if (!occupiedStreamIds.has(sid)) {
+        const queue = streamQueues[sid] || [];
+        if (queue.length > 0) {
+          const nextSetId = queue[0];
+          const nextSet = allSets.find(s => String(s.id) === String(nextSetId));
+          // Only promote if both entrants are filled
+          if (nextSet && nextSet.slots?.[0]?.entrant?.name && nextSet.slots?.[1]?.entrant?.name) {
+            addPollLog(`🎬 Stream ${stream.streamName} is free — auto-promoting next match ${nextSetId}`, 'new');
+            // Remove from queue first
+            streamQueues[sid].shift();
+            saveStreamQueues();
+            // Call it
+            callQueuedSetToStream(nextSetId, stream.id, stream.streamName);
+          }
+        }
+      }
+    }
+
+    // Drop sets from tracking sets once their stream/queue association ends —
+    // so re-assigning later (after a pull or completion) pings again.
+    const currentlyStreamed = new Set(allSets.filter(s => s.stream?.id && (s.state === 2 || s.state === 6)).map(s => String(s.id)));
     for (const sid of [...streamAnnouncedSetIds]) {
       if (!currentlyStreamed.has(sid)) streamAnnouncedSetIds.delete(sid);
     }
+    // queuePingedSetIds GC: drop entries no longer in any queue or live on stream.
+    const allQueuedAndLive = new Set([...currentlyStreamed]);
+    for (const q of Object.values(streamQueues)) {
+      for (const id of q) allQueuedAndLive.add(String(id));
+    }
+    for (const sid of [...queuePingedSetIds]) {
+      if (!allQueuedAndLive.has(sid)) queuePingedSetIds.delete(sid);
+    }
 
     // 2. AUTO-ASSIGN — STATIONS ONLY. Streams are filled manually via the
-    // Stream Queue in the Player Hub. Auto-assign never picks streams now.
+    // Stream Queue. Auto-assign never picks streams now.
     if (autoOn && pendingSetsData.length > 0 && availableStations.length > 0) {
       const lowestIncompletePhase = getLowestIncompletePhase();
 
@@ -1345,7 +1459,11 @@ async function doPoll() {
 
       // Stream-priority sets (main-only, stream-preferred) are NEVER auto-assigned
       // to a station — they wait in the stream queue for a human to pick them.
-      const stationEligible = pending.filter(s => getSetStreamTier(s) === 'normal');
+      // Queued sets are also skipped — they're waiting in a stream queue and
+      // shouldn't be called to a station behind the scenes.
+      const stationEligible = pending
+        .filter(s => getSetStreamTier(s) === 'normal')
+        .filter(s => !isInAnyQueue(s.id));
 
       // Sort: phase order (lower first), then oldest first
       stationEligible.sort((a, b) => {
@@ -1409,6 +1527,7 @@ async function doPoll() {
     if (pingCount === 0) document.getElementById('autoMeta').textContent = `Last poll: ${new Date().toLocaleTimeString()} · ${calledSets.length} sets active`;
     if (!document.querySelector('#activeSetList input:focus')) renderManualSets();
     if (!document.querySelector('#tab-hub input:focus')) renderPlayerHub();
+    if (!document.querySelector('#tab-stream input:focus')) renderStreamQueue();
 
   } catch (e) {
     addPollLog(`Error: ${e.message}`, 'err');
@@ -1438,6 +1557,9 @@ async function startPolling() {
 
   // Apply the same filters as auto-assign before forcing a start.gg call
   let validPending = pendingSetsData || [];
+
+  // Skip queued sets — they're waiting for stream promotion, not a station call
+  validPending = validPending.filter(s => !isInAnyQueue(s.id));
 
   const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
   const pgAllowed = pgFilterRaw ? pgFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -1509,7 +1631,7 @@ async function fetchManualSets() {
     pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
     if (stationData) stationList = stationData.data.event.tournament.stations.nodes.sort((a, b) => a.number - b.number);
     if (streamData) streamList = streamData.data.event.tournament.streams || [];
-    renderManualSets(); renderPlayerHub(); updateVenueDashboardUI(allSets);
+    renderManualSets(); renderPlayerHub(); renderStreamQueue(); updateVenueDashboardUI(allSets);
     if (btn) btn.textContent = 'Fetch ↓';
   } catch (e) {
     toast(`✗ ${e.message}`, true); if (btn) btn.textContent = 'Fetch ↓';
@@ -1797,7 +1919,31 @@ function renderStationSidebar() {
 
 // ─── Queue mutators (all save to localStorage; caller re-renders) ───
 
-function addToStreamQueue(setId, streamId) {
+// Find which stream queue (if any) a given setId is sitting in. Used by the
+// player hub to surface "queued for stream X" state on a player's match card,
+// and by other code paths to avoid duplicate queue placements.
+function findQueueAssignment(setId) {
+  for (const sid of Object.keys(streamQueues)) {
+    if (streamQueues[sid].some(x => String(x) === String(setId))) {
+      return { streamId: sid, position: streamQueues[sid].findIndex(x => String(x) === String(setId)) };
+    }
+  }
+  return null;
+}
+
+// Cheaper boolean variant — used by auto-assign and external-call paths to
+// skip any set that's currently sitting in a stream queue. Queued sets must
+// not be auto-called to a station, must not be auto-assigned a station, and
+// must not generate a Set Called ping if a TO calls them externally.
+function isInAnyQueue(setId) {
+  const target = String(setId);
+  for (const sid of Object.keys(streamQueues)) {
+    if (streamQueues[sid].some(x => String(x) === target)) return true;
+  }
+  return false;
+}
+
+async function addToStreamQueue(setId, streamId, opts = {}) {
   const sid = String(streamId);
   if (!streamQueues[sid]) streamQueues[sid] = [];
   // Remove from any other stream's queue first (a set can only be queued once)
@@ -1806,18 +1952,127 @@ function addToStreamQueue(setId, streamId) {
     streamQueues[otherSid] = streamQueues[otherSid].filter(x => String(x) !== String(setId));
   }
   // Append if not already in this queue
-  if (!streamQueues[sid].some(x => String(x) === String(setId))) {
+  const alreadyHere = streamQueues[sid].some(x => String(x) === String(setId));
+  if (!alreadyHere) {
     streamQueues[sid].push(String(setId));
   }
   saveStreamQueues();
+
+  // Defensively suppress the station ping pipeline for this set. If the set
+  // is already in state 6 when queued (e.g. you queued an already-called set),
+  // the external-call detector would otherwise re-announce it on its next poll.
+  // Marking it announced means: "we've already handled the player communication
+  // for this set; don't send a station ping for it." The queue ping below is
+  // the only player communication this set generates until ▶ CALL.
+  announcedSetIds.add(String(setId));
+
+  // If the set has already been called/in-progress on a station, reset it back
+  // to pending state on start.gg. This:
+  //   • Removes its station assignment, freeing the station for another match
+  //   • Drops it from the Active Matches tab (state 6/2 → 1)
+  //   • Keeps it visible in the queue
+  //
+  // resetSet is safe here because queued sets haven't had scores reported yet.
+  // We skip the API call if the set never had a station assigned, since there's
+  // nothing to reset. Failures are non-fatal — log and continue.
+  const setObj = allFetchedSets.find(s => String(s.id) === String(setId)) ||
+    activeSetsData.find(s => String(s.id) === String(setId)) ||
+    pendingSetsData.find(s => String(s.id) === String(setId));
+
+  const autoStreamAssign = localStorage.getItem('abbey_auto_stream_assign') !== '0';
+  const streamStationId = localStorage.getItem('abbey_stream_station_id') || '';
+
+  // 1. If the set is currently active (state 2 or 6) or has a station, reset it to pending (state 1).
+  // This removes it from the "Active Matches" pool and frees the old station.
+  if (setObj && (setObj.station?.id || setObj.state === 2 || setObj.state === 6)) {
+    try {
+      await sggQuery(`mutation { resetSet(setId: "${setId}") { id state } }`);
+      // Locally reflect the reset
+      const previousStationId = setObj.station?.id;
+      setObj.station = null;
+      setObj.state = 1;
+      if (previousStationId) recentlyAssignedLocs.delete(String(previousStationId));
+      activeSetsData = activeSetsData.filter(s => String(s.id) !== String(setId));
+      if (!pendingSetsData.some(s => String(s.id) === String(setId))) {
+        pendingSetsData.push(setObj);
+      }
+      _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+      addPollLog(`📋 Reset ${setId} to pending for queue`, 'new');
+    } catch (e) {
+      addPollLog(`⚠️ resetSet failed for ${setId}: ${e.message}`, 'err');
+    }
+  }
+
+  // 2. Perform stream and dedicated station assignment if enabled.
+  if (autoStreamAssign) {
+    try {
+      addPollLog(`📺 Auto-assigning ${setId} to stream ${streamId}...`);
+      await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
+
+      // Update local state so UI reflects the assignment immediately
+      const streamObj = streamList.find(s => String(s.id) === String(streamId));
+      if (setObj && streamObj) {
+        setObj.stream = { id: streamId, streamName: streamObj.streamName };
+      }
+
+      if (streamStationId) {
+        addPollLog(`📍 Also assigning to stream station ${streamStationId}...`);
+        await sggQuery(`mutation { assignStation(setId: "${setId}", stationId: "${streamStationId}") { id } }`);
+
+        // Update local state for station
+        if (setObj) {
+          // If stationList isn't available, we'll just use the ID. 
+          // The next poll will fill in the details anyway.
+          setObj.station = { id: streamStationId };
+        }
+      }
+      toast('📺 Auto-assigned to stream');
+    } catch (e) {
+      addPollLog(`⚠️ Auto-assign failed for ${setId}: ${e.message}`, 'err');
+    }
+  }
+
   renderStreamQueue();
+  if (alreadyHere) { toast('Already in this queue'); return; }
   toast('Added to queue');
+
+  // Send the "you're in the queue" ping. Skip if quiet=true (used by external
+  // detector that's already pinging) or if the set has no resolved entrants
+  // yet (pre-assignments to unfilled sets). For unfilled sets we re-trigger
+  // this when the entrants get filled in via reconcileQueueOnPoll.
+  if (opts.quiet) return;
+  const set = allFetchedSets.find(s => String(s.id) === String(setId)) ||
+    activeSetsData.find(s => String(s.id) === String(setId)) ||
+    pendingSetsData.find(s => String(s.id) === String(setId));
+  if (!set) return;
+  const stream = streamList.find(s => String(s.id) === sid);
+  if (!stream) return;
+  await sendQueuePingForSet(set, stream);
+}
+
+// Wrapped helper so external code paths (the detector) can also send queue pings.
+// Marks the set as queue-pinged so we don't double-fire.
+async function sendQueuePingForSet(set, stream) {
+  const nA = set.slots[0]?.entrant?.name, nB = set.slots[1]?.entrant?.name;
+  if (!nA || !nB) return; // unfilled set — wait until entrants resolve
+  if (queuePingedSetIds.has(String(set.id))) return; // already pinged
+  queuePingedSetIds.add(String(set.id));
+  const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+  const ping = buildQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText });
+  try { await sendWebhook(ping.content); } catch (e) { }
+  addPollLog(`${ping.shiny ? '✨ SHINY' : '🎬'} Queued: ${nA} vs ${nB} → ${stream.streamName}`, 'new');
+  if (ping.shiny) toast('✨ SHINY QUEUE PLACEMENT! 1/8192');
 }
 
 function removeFromStreamQueue(setId, streamId) {
   const sid = String(streamId);
   if (!streamQueues[sid]) return;
   streamQueues[sid] = streamQueues[sid].filter(x => String(x) !== String(setId));
+  // Allow a future re-add to ping again
+  queuePingedSetIds.delete(String(setId));
+  // Allow station call/ping pipeline to run again if the set is no longer queued.
+  // (We deliberately suppressed it on add via announcedSetIds.add — undo that.)
+  announcedSetIds.delete(String(setId));
   saveStreamQueues();
   renderStreamQueue();
 }
@@ -1835,27 +2090,50 @@ function moveInStreamQueue(setId, streamId, dir) {
   renderStreamQueue();
 }
 
-// Strip out finished/missing/already-on-stream sets — runs after every poll
+// Strip out finished/missing/already-on-stream sets — runs after every poll.
+// Also reconciles: any unfilled pending set in the queue that NOW has both
+// entrants gets a queue ping (since we couldn't ping when it was added).
 function cleanStreamQueues() {
   let changed = false;
+  const newlyResolved = []; // {set, stream} pairs to ping post-cleanup
+
   for (const sid of Object.keys(streamQueues)) {
     const before = streamQueues[sid].length;
     streamQueues[sid] = streamQueues[sid].filter(setId => {
       const s = activeSetsData.find(x => String(x.id) === String(setId)) ||
-                pendingSetsData.find(x => String(x.id) === String(setId)) ||
-                allFetchedSets.find(x => String(x.id) === String(setId));
+        pendingSetsData.find(x => String(x.id) === String(setId)) ||
+        allFetchedSets.find(x => String(x.id) === String(setId));
       if (!s) return false; // set vanished from event
       if (s.state === 3) return false; // completed
-      if (s.stream?.id) return false; // already on a stream
+      if (s.stream?.id && String(s.stream.id) !== sid) return false; // moved to different stream by external action
       return true;
     });
     if (streamQueues[sid].length !== before) changed = true;
+
+    // Reconciliation pass: identify queued sets whose entrants just got filled
+    // in (e.g. winners-side feeds into a Top 8 set), so we can ping them now.
+    const stream = streamList.find(s => String(s.id) === sid);
+    if (stream) {
+      for (const setId of streamQueues[sid]) {
+        const s = allFetchedSets.find(x => String(x.id) === String(setId));
+        if (!s) continue;
+        const filled = !!(s.slots?.[0]?.entrant?.name && s.slots?.[1]?.entrant?.name);
+        if (filled && !queuePingedSetIds.has(String(s.id))) {
+          newlyResolved.push({ set: s, stream });
+        }
+      }
+    }
   }
   if (changed) saveStreamQueues();
+
+  // Fire pings outside the loop (async; don't await — we want render to finish)
+  for (const { set, stream } of newlyResolved) {
+    sendQueuePingForSet(set, stream);
+  }
 }
 
 // Promote head of queue: actually call assignStream API for the first queued match.
-// Reuses existing requestMoveToStream confirmation flow.
+// This is the moment we ping "you're up on stream" and run the API call.
 function promoteFromQueue(streamId) {
   const sid = String(streamId);
   const q = streamQueues[sid] || [];
@@ -1864,30 +2142,33 @@ function promoteFromQueue(streamId) {
   const stream = streamList.find(s => String(s.id) === sid);
   if (!stream) { toast('Stream not found', true); return; }
   const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
-              allFetchedSets.find(s => String(s.id) === String(setId));
+    pendingSetsData.find(s => String(s.id) === String(setId)) ||
+    allFetchedSets.find(s => String(s.id) === String(setId));
   if (!set) {
-    // Set is gone — drop it and try the next one
     streamQueues[sid].shift();
     saveStreamQueues();
     renderStreamQueue();
     toast('Queued match no longer available', true);
     return;
   }
-  // The success path of moveToStream calls fetchManualSets() which re-renders.
-  // We need to drop from queue *before* the API call to keep the UI honest if the
-  // caller cancels the modal — but the modal cancel just closes it, so we drop on success.
   const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+  const filled = !!(set.slots?.[0]?.entrant?.name && set.slots?.[1]?.entrant?.name);
   const fromStation = set.station?.number ? `Station ${set.station.number}` : null;
 
+  if (!filled) {
+    toast('Players not filled in yet — can\'t call', true);
+    return;
+  }
+
   showConfirmModal({
-    title: '▶ Send to Stream',
-    message: `Send <strong>${nA} vs ${nB}</strong> to <strong>${stream.streamName}</strong>?` +
+    title: '▶ Call to Stream',
+    message: `Call <strong>${nA} vs ${nB}</strong> to <strong>${stream.streamName}</strong>?` +
       (fromStation
-        ? `<br><br>This will free up <strong>${fromStation}</strong>, ping the players in Discord, and remove this match from the queue.`
-        : '<br><br>Players will be pinged in Discord. This match will be removed from the queue.'),
+        ? `<br><br>This will free up <strong>${fromStation}</strong>, assign the set to the stream on start.gg, and ping the players in Discord that they're up.`
+        : `<br><br>This will assign the set to the stream on start.gg and ping the players that they're up.`),
     variant: 'info',
     buttons: [{
-      label: `Yes — send to ${stream.streamName}`,
+      label: `Yes — call to ${stream.streamName}`,
       sublabel: fromStation ? `Frees ${fromStation}` : 'Sends Discord ping',
       variant: 'info',
       icon: '🎥',
@@ -1895,10 +2176,54 @@ function promoteFromQueue(streamId) {
         // Drop from queue first so re-renders don't show it twice
         streamQueues[sid] = streamQueues[sid].filter(x => String(x) !== String(setId));
         saveStreamQueues();
-        await moveToStream(setId, stream.id, stream.streamName);
+        await callQueuedSetToStream(setId, stream.id, stream.streamName);
       },
     }],
   });
+}
+
+// Actually fires the API call + the "you're up" ping. Replaces the old
+// moveToStream flow for the queue path.
+async function callQueuedSetToStream(setId, streamId, streamName) {
+  const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
+    pendingSetsData.find(s => String(s.id) === String(setId)) ||
+    allFetchedSets.find(s => String(s.id) === String(setId));
+  if (!set) { toast('Set not found', true); return; }
+  const previousStationId = set.station?.id;
+
+  // Mark as already-announced for the external detector so it doesn't double-ping.
+  streamAnnouncedSetIds.add(String(setId));
+
+  try {
+    // "Call" the set on start.gg (moves State 1 -> 6). This makes it official.
+    // We catch errors here in case it's already state 6 or 2.
+    try {
+      await sggQuery(`mutation { markSetInProgress(setId: "${setId}") { id state } }`);
+    } catch (err) {
+      console.warn('markSetInProgress failed (set might already be active):', err);
+    }
+
+    await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
+    set.stream = { id: streamId, streamName: streamName };
+    set.state = 6; // Locally mark as Called
+    recentlyAssignedLocs.set(String(streamId), Date.now());
+    if (previousStationId) recentlyAssignedLocs.delete(String(previousStationId));
+
+    const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+    const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+    const ping = buildStreamCallPing({ mA, mB, streamLabel: streamName, roundText: set.fullRoundText });
+    await sendWebhook(ping.content);
+
+    addPollLog(`${ping.shiny ? '✨ SHINY' : '🎥'} Called to stream: ${nA} vs ${nB} → 🎥 ${streamName}`, 'new');
+    toast(`🎥 ${nA} vs ${nB} called to ${streamName}`);
+    if (ping.shiny) toast('✨ SHINY STREAM CALL! 1/8192');
+
+    fetchManualSets();
+  } catch (e) {
+    streamAnnouncedSetIds.delete(String(setId));
+    toast(`✗ Call to stream failed: ${e.message}`, true);
+    addPollLog(`⚠️ callQueuedSetToStream(${setId} → ${streamId}) failed: ${e.message}`, 'err');
+  }
 }
 
 function toggleAddQueuePanel(streamId) {
@@ -1936,29 +2261,40 @@ function renderStreamQueue() {
     return pgAllowed.some(allowed => String(s.phaseGroup?.id || '').includes(allowed));
   };
 
-  // Candidate pool: CALLED (state 6) + PENDING uncalled matches (state 1, both
-  // entrants known) — anything ready or queued-up at the bracket level.
-  // In-progress sets (state 2) are excluded. Restricted to enabled pools.
-  const candidatePool = [...activeSetsData.filter(s => s.state === 6), ...pendingSetsData]
+  // Candidate pool for the queue picker: every actionable set in the event,
+  // INCLUDING unfilled pending sets (no entrants yet) — start.gg supports
+  // assigning streams to those, so the user can pre-queue Top 8 etc. before
+  // the bracket fills in. State 1/2/6, not already on a stream, not already
+  // queued anywhere, restricted to enabled pools.
+  const candidatePool = allFetchedSets
+    .filter(s => s.state === 1 || s.state === 2 || s.state === 6)
     .filter(s => !s.stream?.id)
     .filter(s => !allQueuedIds.has(String(s.id)))
     .filter(inAllowedPool)
-    .sort((a, b) => getStreamScore(a) - getStreamScore(b));
+    .sort((a, b) => {
+      // Filled sets first, then by stream score; unfilled sets at the bottom
+      // sorted by phase order (deeper rounds bubble up among unfilled).
+      const aFilled = !!(a.slots?.[0]?.entrant?.name && a.slots?.[1]?.entrant?.name);
+      const bFilled = !!(b.slots?.[0]?.entrant?.name && b.slots?.[1]?.entrant?.name);
+      if (aFilled !== bFilled) return aFilled ? -1 : 1;
+      if (aFilled) return getStreamScore(a) - getStreamScore(b);
+      return (a.phaseGroup?.phase?.phaseOrder ?? 999) - (b.phaseGroup?.phase?.phaseOrder ?? 999);
+    });
 
   const buildCandidateRow = (set, streamId, streamName) => {
-    const a = set.slots[0]?.entrant?.name || '?';
-    const b = set.slots[1]?.entrant?.name || '?';
+    const a = set.slots[0]?.entrant?.name || 'TBD';
+    const b = set.slots[1]?.entrant?.name || 'TBD';
+    const filled = a !== 'TBD' && b !== 'TBD';
     const sA = set.slots[0]?.seed?.seedNum, sB = set.slots[1]?.seed?.seedNum;
-    const score = getStreamScore(set);
-    const grade = streamGrade(score);
+    const score = filled ? getStreamScore(set) : null;
+    const grade = filled ? streamGrade(score) : '';
     const stateLbl = set.state === 1 ? 'pending' : set.state === 2 ? 'in progress' : 'called';
-    const fromStation = set.station?.number ? `Station ${set.station.number}` : stateLbl;
+    const fromLoc = set.station?.number ? `Station ${set.station.number}` : stateLbl;
     const round = set.fullRoundText || '';
-    const escName = String(streamName).replace(/'/g, "\\'");
     return `<div class="cand-row" onclick="addToStreamQueue('${set.id}', '${streamId}')" title="Add to ${streamName} queue">
       <div class="cand-info">
-        <div class="cand-players">${a} <span style="color:var(--muted);font-weight:400;">vs</span> ${b}</div>
-        <div class="cand-meta">${round} · ${fromStation}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}</div>
+        <div class="cand-players" style="${filled ? '' : 'color:var(--muted);font-style:italic;'}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
+        <div class="cand-meta">${round} · ${fromLoc}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}${!filled ? ' · awaiting entrants' : ''}</div>
       </div>
       <div class="cand-grade">${grade || ''}</div>
     </div>`;
@@ -1966,25 +2302,29 @@ function renderStreamQueue() {
 
   const buildQueueItem = (setId, streamId, idx, queueLen, streamIsLive) => {
     const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
-                pendingSetsData.find(s => String(s.id) === String(setId)) ||
-                allFetchedSets.find(s => String(s.id) === String(setId));
+      pendingSetsData.find(s => String(s.id) === String(setId)) ||
+      allFetchedSets.find(s => String(s.id) === String(setId));
     if (!set) return '';
-    const a = set.slots[0]?.entrant?.name || '?';
-    const b = set.slots[1]?.entrant?.name || '?';
+    const a = set.slots[0]?.entrant?.name || 'TBD';
+    const b = set.slots[1]?.entrant?.name || 'TBD';
+    const filled = a !== 'TBD' && b !== 'TBD';
     const round = set.fullRoundText || '';
     const stateLbl = set.state === 1 ? 'pending' : set.state === 2 ? 'in progress' : 'called';
-    const fromStation = set.station?.number ? `Station ${set.station.number}` : stateLbl;
+    const fromLoc = set.station?.number ? `Station ${set.station.number}` : stateLbl;
     const isHead = idx === 0;
-    const sendBtn = isHead && !streamIsLive
-      ? `<button class="qi-btn send" onclick="event.stopPropagation();promoteFromQueue('${streamId}')" title="Send to stream now">▶ SEND</button>`
-      : isHead && streamIsLive
-        ? `<button class="qi-btn send" disabled title="Stream is busy — remove current match first">▶ SEND</button>`
-        : '';
+    let sendBtn = '';
+    if (isHead && !streamIsLive && filled) {
+      sendBtn = `<button class="qi-btn send" onclick="event.stopPropagation();promoteFromQueue('${streamId}')" title="Call to stream now">▶ CALL</button>`;
+    } else if (isHead && streamIsLive) {
+      sendBtn = `<button class="qi-btn send" disabled title="Stream is busy — remove current match first">▶ CALL</button>`;
+    } else if (isHead && !filled) {
+      sendBtn = `<button class="qi-btn send" disabled title="Players not filled in yet">▶ CALL</button>`;
+    }
     return `<div class="queue-item ${isHead ? 'head' : ''}">
       <div class="qi-pos">${idx + 1}</div>
       <div class="qi-info">
-        <div class="qi-players">${a} <span style="color:var(--muted);font-weight:400;">vs</span> ${b}</div>
-        <div class="qi-meta">${round} · ${fromStation}</div>
+        <div class="qi-players" style="${filled ? '' : 'color:var(--muted);font-style:italic;'}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
+        <div class="qi-meta">${round} · ${fromLoc}${!filled ? ' · awaiting entrants' : ''}</div>
       </div>
       <div class="qi-controls">
         ${sendBtn}
@@ -2006,8 +2346,18 @@ function renderStreamQueue() {
     if (occupant) {
       const a = occupant.slots[0]?.entrant?.name || '?';
       const b = occupant.slots[1]?.entrant?.name || '?';
+      const eA = occupant.slots[0]?.entrant, eB = occupant.slots[1]?.entrant;
+      const escA = a.replace(/'/g, "\\'"), escB = b.replace(/'/g, "\\'");
       const round = occupant.fullRoundText || '';
       const stateLbl = occupant.state === 2 ? 'IN PROGRESS' : 'CALLED';
+      const locLbl = `🎥 ${stream.streamName}`;
+      // The Report Score button only makes sense on in-progress matches —
+      // calling a score on a state 6 (called, not yet started) match means
+      // it skipped game results, which start.gg accepts but is unusual.
+      // We allow it either way and let the TO judge.
+      const scoreBtn = (eA?.id && eB?.id)
+        ? `<button class="ss-mini-btn primary" onclick="openScoreOverlay('${occupant.id}','${eA.id}','${eB.id}','${escA}','${escB}','${locLbl}')">📝 Report Score</button>`
+        : '';
       liveSection = `<div class="stream-slot live">
         <div class="ss-head">
           <div class="ss-name">🎥 ${stream.streamName}</div>
@@ -2016,6 +2366,7 @@ function renderStreamQueue() {
         <div class="ss-match">${a} <span style="color:var(--muted);font-weight:400;">vs</span> ${b}</div>
         <div class="ss-match-meta">${round}</div>
         <div class="ss-actions">
+          ${scoreBtn}
           <button class="ss-mini-btn danger" onclick="pullFromStream('${occupant.id}')">⏏ Remove from stream</button>
         </div>
       </div>`;
@@ -2025,7 +2376,7 @@ function renderStreamQueue() {
           <div class="ss-name">🎥 ${stream.streamName}</div>
           <div class="ss-status">EMPTY</div>
         </div>
-        <div class="ss-match-meta" style="margin-top:6px;">No match currently on stream${queue.length ? ' — click ▶ SEND on the head of the queue to promote.' : '.'}</div>
+        <div class="ss-match-meta" style="margin-top:6px;">No match currently on stream${queue.length ? ' — click ▶ CALL on the head of the queue to promote.' : '.'}</div>
       </div>`;
     }
 
@@ -2087,7 +2438,19 @@ function renderPlayerHub() {
     const onStream = !!set.stream?.streamName;
     const streamName = set.stream?.streamName || '';
     const stationLabel = set.station?.number ? `Station ${set.station.number}` : '';
-    const loc = onStream ? `📺 ON STREAM · ${streamName}` : (stationLabel || 'No Location');
+    // Player-hub cards now also surface "queued for stream X" status — the player
+    // is still playing on a station, but they should know they're up next on stream.
+    const queueAssignment = !onStream ? findQueueAssignment(set.id) : null;
+    const queuedStream = queueAssignment ? streamList.find(s => String(s.id) === queueAssignment.streamId) : null;
+    const isQueued = !!queuedStream;
+    const queuedLabel = queuedStream
+      ? `🎬 QUEUED FOR ${queuedStream.streamName.toUpperCase()}${queueAssignment.position === 0 ? ' (NEXT UP)' : ` (#${queueAssignment.position + 1})`}`
+      : '';
+    const loc = onStream
+      ? `📺 ON STREAM · ${streamName}`
+      : isQueued
+        ? `${queuedLabel}${stationLabel ? ' · ' + stationLabel : ''}`
+        : (stationLabel || 'No Location');
     const escA = nameA.replace(/'/g, "\'"), escB = nameB.replace(/'/g, "\'");
 
     if (set.state === 6) {
@@ -2097,12 +2460,12 @@ function renderPlayerHub() {
       const isExpired = (nowSec - callTime) / 60 >= DQ_MINUTES;
       const autoDqOn = document.getElementById('autoDqToggle')?.checked !== false;
 
-      // On-stream sets get a blue accent and a clearer label instead of the
-      // standard "Called · Station X" red treatment, so it's immediately obvious
-      // they've been moved to stream.
-      const accentVar = onStream ? 'var(--blue)' : 'var(--accent2)';
-      const headerLabel = onStream ? loc : `Called · ${loc}`;
-      const cardBg = onStream ? 'rgba(114,137,218,0.06)' : 'var(--bg)';
+      // On-stream OR queued-for-stream sets get a blue accent so it's
+      // immediately obvious that stream interaction is incoming/active.
+      const blueState = onStream || isQueued;
+      const accentVar = blueState ? 'var(--blue)' : 'var(--accent2)';
+      const headerLabel = blueState ? loc : `Called · ${loc}`;
+      const cardBg = blueState ? 'rgba(114,137,218,0.06)' : 'var(--bg)';
 
       // Handle Manual DQ Fallback Layout
       if (isExpired && !autoDqOn) {
@@ -2143,9 +2506,10 @@ function renderPlayerHub() {
     }
 
     if (set.state === 2) {
-      const accentVar = onStream ? 'var(--blue)' : 'var(--accent)';
-      const headerLabel = onStream ? loc : `In Progress · ${loc}`;
-      const cardBg = onStream ? 'rgba(114,137,218,0.06)' : 'var(--bg)';
+      const blueState = onStream || isQueued;
+      const accentVar = blueState ? 'var(--blue)' : 'var(--accent)';
+      const headerLabel = blueState ? loc : `In Progress · ${loc}`;
+      const cardBg = blueState ? 'rgba(114,137,218,0.06)' : 'var(--bg)';
       return `<div style="height:${CARD_H};background:${cardBg};border:2px solid ${accentVar};border-radius:10px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between;gap:10px;">
         <div style="flex-shrink:0;">
           <div style="font-size:0.7rem;color:${accentVar};font-family:'Space Mono',monospace;margin-bottom:6px;font-weight:700;">${headerLabel}</div>
@@ -2284,6 +2648,14 @@ async function submitOverlayScore() {
   const sA = _overlayScoreA, sB = _overlayScoreB;
   closeScoreOverlay();
 
+  // Capture the stream this set was on (if any) before reporting — once we
+  // call reportBracketSet, the set is gone and we can't look it up to figure
+  // out where to auto-call from. We use this to auto-promote the next queued
+  // match for that stream after the score lands.
+  const setBeingReported = activeSetsData.find(s => String(s.id) === String(setId)) ||
+    allFetchedSets.find(s => String(s.id) === String(setId));
+  const reportedStreamId = setBeingReported?.stream?.id ? String(setBeingReported.stream.id) : null;
+
   const winnerId = sA > sB ? idA : idB;
   const winnerName = sA > sB ? nameA : nameB;
   let gameData = [], g = 1;
@@ -2293,15 +2665,63 @@ async function submitOverlayScore() {
     await sggQuery(`mutation { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", gameData: [${gameData.join(',')}]) { id state } }`);
     toast(`🏆 Reported: ${winnerName} wins!`);
     completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
+    streamAnnouncedSetIds.delete(String(setId));
     hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
     _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
     const entry = matchLog.find(e => e.setId === setId);
     if (entry) { entry.completed = true; renderLog(); }
+
+    // Auto-call the next queued match for this stream, if any.
+    // We do this BEFORE fetchManualSets so the stream goes from
+    // "live: just-reported set" to "live: next queued set" without a
+    // visible empty state in between.
+    if (reportedStreamId) {
+      const nextSetId = (streamQueues[reportedStreamId] || [])[0];
+      if (nextSetId) {
+        const stream = streamList.find(s => String(s.id) === reportedStreamId);
+        const nextSet = activeSetsData.find(s => String(s.id) === String(nextSetId)) ||
+          pendingSetsData.find(s => String(s.id) === String(nextSetId)) ||
+          allFetchedSets.find(s => String(s.id) === String(nextSetId));
+        const nextFilled = !!(nextSet?.slots?.[0]?.entrant?.name && nextSet?.slots?.[1]?.entrant?.name);
+        if (stream && nextSet && nextFilled) {
+          // Drop from queue first so re-renders don't show it twice
+          streamQueues[reportedStreamId] = streamQueues[reportedStreamId].filter(x => String(x) !== String(nextSetId));
+          saveStreamQueues();
+          addPollLog(`🎬 Auto-promoting next queued match → ${stream.streamName} (after score report)`, 'new');
+          // Don't await — let it run while we refresh data, so the UI stays snappy
+          callQueuedSetToStream(nextSetId, stream.id, stream.streamName);
+        } else if (stream && nextSet && !nextFilled) {
+          addPollLog(`⏸ Next queued match for ${stream.streamName} has unfilled entrants — skipping auto-promote`, 'new');
+        }
+      }
+    }
+
     fetchManualSets();
   } catch (e) { toast(`✗ ${e.message}`, true); }
 }
 
-loadSettings();
+// --- WordPress compatibility shim ---
+// Some WP optimization plugins (WP Rocket, Autoptimize, LiteSpeed, SiteGround Optimizer,
+// etc.) wrap inline scripts in IIFEs or load them as modules, which scopes our top-level
+// functions out of `window`. Inline `onclick=`/`onchange=` handlers can only see globals,
+// so we explicitly publish every inline-handler-callable function here.
+//
+// ⚠️ This MUST run before any other top-level function call below — if any of
+// those throw, the script halts and `Object.assign` never runs, leaving every
+// inline handler undefined. Hoisted to run first; failures elsewhere don't
+// strand the UI.
+Object.assign(window, {
+  addToStreamQueue, browseEvents, callQueuedSetToStream, callSetFromPanel,
+  clearPhaseFilter, closeConfirmModal, closeScoreOverlay, copyPollLog,
+  fetchAndPopulateStreams, fetchManualSets, hubToggleWatch, loadCSV,
+  loadPhaseGroups, manualLink, markInProgressQuick, moveInStreamQueue,
+  openScoreOverlay, promoteFromQueue, pullFromStream, removeFromStreamQueue,
+  renderManualSets, requestDQ, requestHubDQ, requestMoveToStream, resetMatch,
+  savePriorityStream, saveSettings, setScore, startPolling, stopPolling,
+  submitOverlayScore, switchTab, toggleAddQueuePanel, toggleHubCheckin, toggleSetup
+});
+
+try { loadSettings(); } catch (e) { console.error('loadSettings failed:', e); }
 // Restore discord IDs from localStorage so page refresh doesn't wipe pings
 try {
   const savedMap = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}');
@@ -2314,19 +2734,4 @@ try {
     }
   }
 } catch (e) { }
-renderLog();
-
-// --- WordPress compatibility shim ---
-// Some WP optimization plugins (WP Rocket, Autoptimize, LiteSpeed, SiteGround Optimizer,
-// etc.) wrap inline scripts in IIFEs or load them as modules, which scopes our top-level
-// functions out of `window`. Inline `onclick=`/`onchange=` handlers can only see globals,
-// so we explicitly publish every inline-handler-callable function here.
-Object.assign(window, {
-  addToStreamQueue, browseEvents, callSetFromPanel, clearPhaseFilter, closeConfirmModal,
-  closeScoreOverlay, copyPollLog, fetchAndPopulateStreams, fetchManualSets, hubToggleWatch,
-  loadCSV, loadPhaseGroups, manualLink, markInProgressQuick, moveInStreamQueue,
-  openScoreOverlay, promoteFromQueue, pullFromStream, removeFromStreamQueue,
-  renderManualSets, requestDQ, requestHubDQ, requestMoveToStream, resetMatch,
-  savePriorityStream, saveSettings, setScore, startPolling, stopPolling,
-  submitOverlayScore, switchTab, toggleAddQueuePanel, toggleHubCheckin, toggleSetup
-});
+try { renderLog(); } catch (e) { console.error('renderLog failed:', e); }
