@@ -1534,7 +1534,9 @@
       font-size: 0.78rem;
     }
 
-    .queue-item:last-child { margin-bottom: 0; }
+    .queue-item:last-child {
+      margin-bottom: 0;
+    }
 
     .queue-item.head {
       border-color: var(--blue);
@@ -1550,7 +1552,10 @@
       text-align: center;
     }
 
-    .queue-item.head .qi-pos { color: var(--blue); font-weight: 700; }
+    .queue-item.head .qi-pos {
+      color: var(--blue);
+      font-weight: 700;
+    }
 
     .queue-item .qi-info {
       flex: 1;
@@ -1755,6 +1760,32 @@
       <div id="eventPicker" style="display:none;"></div>
       <input type="hidden" id="sggEvent">
       <input type="hidden" id="bypassPhaseToggle">
+
+      <hr class="section-sep">
+
+      <div class="field">
+        <label>Stream Station <span style="color:var(--muted);font-size:0.7rem;">— dedicated station for stream
+            sets</span></label>
+        <div class="row" style="margin-bottom:0;">
+          <select id="streamStationId" onchange="saveSettings()">
+            <option value="">None (Use stream only)</option>
+          </select>
+          <button class="btn-sm" onclick="loadPhaseGroups()" style="white-space:nowrap;">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="toggle-row">
+          <span class="toggle-label" style="font-weight:600;">Auto-Assign Stream on Queue</span>
+          <label class="toggle">
+            <input type="checkbox" id="autoStreamAssignToggle" onchange="saveSettings()" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="hint" style="margin-top:6px;">If enabled, sets added to the stream queue are immediately assigned to
+          the stream and dedicated station on start.gg.</div>
+      </div>
+
       <div id="settingsStatus" style="margin-top:10px;"></div>
     </div>
   </div>
@@ -1762,6 +1793,9 @@
   <div class="tabs">
     <button class="tab active" onclick="switchTab('manual')">&#x1F4CB; Call Sets</button>
     <button class="tab" onclick="switchTab('auto')">&#x26A1; Auto Watch</button>
+    <button class="tab" onclick="switchTab('stream')"
+      style="background:#1a2540;color:#fff;border-color:#1a2540;">&#x1F4FA;
+      Stream</button>
     <button class="tab" onclick="switchTab('hub')" style="background:#252b38;color:#fff;border-color:#252b38;">&#x1F4F1;
       Player Hub</button>
   </div>
@@ -1930,6 +1964,25 @@
     </div>
   </div>
 
+  <!-- ─── Stream Tab ─── -->
+  <div class="tab-panel" id="tab-stream">
+    <div class="row" style="margin-bottom:12px;">
+      <button class="btn-sm" style="flex:1;padding:12px;font-size:1rem;" onclick="fetchManualSets()">&#x21BB; Refresh
+        Matches</button>
+      <button class="btn-sm" id="streamWatchBtn"
+        style="padding:12px 18px;font-size:1rem;background:var(--accent);color:#0d0f12;border-color:var(--accent);"
+        onclick="hubToggleWatch()">&#x25B6; Start Watching</button>
+    </div>
+
+    <div class="stream-queue-card" id="streamTabQueueCard">
+      <div class="sq-title">&#x1F4FA; Stream Queue</div>
+      <div class="sq-subtitle">Build a queue of matches per stream — reorder, remove, then click <strong>▶ CALL TO
+          STREAM</strong> on the head when ready.
+        Calling pings players in Discord and lets them know to head to the stream setup.</div>
+      <div id="streamQueueSlots"></div>
+    </div>
+  </div>
+
   <div class="tab-panel" id="tab-hub">
     <div class="row" style="margin-bottom:16px;">
       <button class="btn-sm" style="flex:1;padding:12px;font-size:1rem;" onclick="fetchManualSets()">&#x21BB; Refresh
@@ -1954,13 +2007,6 @@
 
     <div class="hub-layout">
       <div class="hub-main">
-        <div class="stream-queue-card" id="streamQueueCard">
-          <div class="sq-title">&#x1F4FA; Stream Queue</div>
-          <div class="sq-subtitle">Build a queue of matches per stream — reorder, remove, then click <strong>▶ SEND</strong> on the head when ready.
-            Sending frees the station and pings players in Discord.</div>
-          <div id="streamQueueSlots"></div>
-        </div>
-
         <div class="hub-card" style="border-color:var(--accent);">
           <div class="hub-title" style="color:var(--accent);">&#x1F3AE; Active Matches</div>
           <div class="hub-subtitle">Check in by tapping your name. Once both check in, use Report Score to submit.</div>
@@ -1980,59 +2026,61 @@
       </aside>
     </div>
 
-    <div id="scoreOverlay"
-      style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:200;align-items:center;justify-content:center;">
-      <div
-        style="background:var(--surface);border:2px solid var(--accent);border-radius:14px;padding:24px;min-width:340px;max-width:460px;width:92%;">
-        <div id="scoreOverlayTitle" style="font-size:1.05rem;font-weight:800;margin-bottom:3px;text-align:center;">
-        </div>
-        <div id="scoreOverlayLoc"
-          style="font-size:0.7rem;color:var(--accent);font-family:'Space Mono',monospace;text-align:center;margin-bottom:20px;">
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 40px 1fr;gap:8px;align-items:start;margin-bottom:20px;">
-          <div style="text-align:center;">
-            <div id="scoreOverlayNameA"
-              style="font-size:0.85rem;font-weight:700;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-            </div>
-            <div id="scoreDisplayA"
-              style="font-size:2.8rem;font-weight:800;font-family:'Space Mono',monospace;color:var(--accent);margin-bottom:12px;line-height:1;">
-              —</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-              <button onclick="setScore('A',0)" class="score-btn" id="sbA0">0</button>
-              <button onclick="setScore('A',1)" class="score-btn" id="sbA1">1</button>
-              <button onclick="setScore('A',2)" class="score-btn" id="sbA2">2</button>
-              <button onclick="setScore('A',3)" class="score-btn" id="sbA3">3</button>
-            </div>
-          </div>
-          <div style="font-size:1.4rem;font-weight:800;color:var(--muted);text-align:center;padding-top:52px;">-</div>
-          <div style="text-align:center;">
-            <div id="scoreOverlayNameB"
-              style="font-size:0.85rem;font-weight:700;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-            </div>
-            <div id="scoreDisplayB"
-              style="font-size:2.8rem;font-weight:800;font-family:'Space Mono',monospace;color:var(--accent);margin-bottom:12px;line-height:1;">
-              —</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-              <button onclick="setScore('B',0)" class="score-btn" id="sbB0">0</button>
-              <button onclick="setScore('B',1)" class="score-btn" id="sbB1">1</button>
-              <button onclick="setScore('B',2)" class="score-btn" id="sbB2">2</button>
-              <button onclick="setScore('B',3)" class="score-btn" id="sbB3">3</button>
-            </div>
-          </div>
-        </div>
-        <button id="scoreOverlayBtn" class="hub-submit-btn"
-          style="font-size:1rem;padding:14px;opacity:0.4;pointer-events:none;" onclick="submitOverlayScore()">Select
-          scores above</button>
-        <button onclick="closeScoreOverlay()"
-          style="display:block;width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'Inter',sans-serif;cursor:pointer;font-size:0.85rem;">Cancel</button>
-      </div>
-    </div>
+  </div>
   </div>
 
   <div class="card" style="margin-top:14px;">
     <div class="card-title">Session Log</div>
     <div class="match-log" id="matchLog">
       <div class="empty-log">No matches called yet.</div>
+    </div>
+  </div>
+
+  <div id="scoreOverlay"
+    style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:200;align-items:center;justify-content:center;">
+    <div
+      style="background:var(--surface);border:2px solid var(--accent);border-radius:14px;padding:24px;min-width:340px;max-width:460px;width:92%;">
+      <div id="scoreOverlayTitle" style="font-size:1.05rem;font-weight:800;margin-bottom:3px;text-align:center;">
+      </div>
+      <div id="scoreOverlayLoc"
+        style="font-size:0.7rem;color:var(--accent);font-family:'Space Mono',monospace;text-align:center;margin-bottom:20px;">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 40px 1fr;gap:8px;align-items:start;margin-bottom:20px;">
+        <div style="text-align:center;">
+          <div id="scoreOverlayNameA"
+            style="font-size:0.85rem;font-weight:700;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          </div>
+          <div id="scoreDisplayA"
+            style="font-size:2.8rem;font-weight:800;font-family:'Space Mono',monospace;color:var(--accent);margin-bottom:12px;line-height:1;">
+            —</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+            <button onclick="setScore('A',0)" class="score-btn" id="sbA0">0</button>
+            <button onclick="setScore('A',1)" class="score-btn" id="sbA1">1</button>
+            <button onclick="setScore('A',2)" class="score-btn" id="sbA2">2</button>
+            <button onclick="setScore('A',3)" class="score-btn" id="sbA3">3</button>
+          </div>
+        </div>
+        <div style="font-size:1.4rem;font-weight:800;color:var(--muted);text-align:center;padding-top:52px;">-</div>
+        <div style="text-align:center;">
+          <div id="scoreOverlayNameB"
+            style="font-size:0.85rem;font-weight:700;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          </div>
+          <div id="scoreDisplayB"
+            style="font-size:2.8rem;font-weight:800;font-family:'Space Mono',monospace;color:var(--accent);margin-bottom:12px;line-height:1;">
+            —</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+            <button onclick="setScore('B',0)" class="score-btn" id="sbB0">0</button>
+            <button onclick="setScore('B',1)" class="score-btn" id="sbB1">1</button>
+            <button onclick="setScore('B',2)" class="score-btn" id="sbB2">2</button>
+            <button onclick="setScore('B',3)" class="score-btn" id="sbB3">3</button>
+          </div>
+        </div>
+      </div>
+      <button id="scoreOverlayBtn" class="hub-submit-btn"
+        style="font-size:1rem;padding:14px;opacity:0.4;pointer-events:none;" onclick="submitOverlayScore()">Select
+        scores above</button>
+      <button onclick="closeScoreOverlay()"
+        style="display:block;width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'Inter',sans-serif;cursor:pointer;font-size:0.85rem;">Cancel</button>
     </div>
   </div>
 
@@ -2048,7 +2096,7 @@
     </div>
   </div>
 
-  <script src="/wp-content/uploads/matchcaller.js"></script>
+  <script src="/wp-content/uploads/matchcaller.js?v=13"></script>
 </body>
 
 </html>
