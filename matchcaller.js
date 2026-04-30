@@ -185,7 +185,10 @@ function saveSettings() {
   if (event) localStorage.setItem('abbey_sgg_event', event);
   localStorage.setItem('abbey_auto_assign', document.getElementById('autoAssignToggle')?.checked ? '1' : '0');
   localStorage.setItem('abbey_auto_stream_assign', document.getElementById('autoStreamAssignToggle')?.checked ? '1' : '0');
-  localStorage.setItem('abbey_stream_station_id', document.getElementById('streamStationId')?.value || '');
+  localStorage.setItem('abbey_main_stream_id', document.getElementById('mainStreamId')?.value || '');
+  localStorage.setItem('abbey_main_stream_station_id', document.getElementById('mainStreamStationId')?.value || '');
+  localStorage.setItem('abbey_side_stream_id', document.getElementById('sideStreamId')?.value || '');
+  localStorage.setItem('abbey_side_stream_station_id', document.getElementById('sideStreamStationId')?.value || '');
   localStorage.setItem('abbey_bypass_phase', '0');
 
   const adqInput = document.getElementById('autoDqToggle');
@@ -288,108 +291,8 @@ function manualLink(tag) {
   toast(`✓ Linked ${tag}`);
 }
 
-function renderCsvStatus() {
-  const missing = players.filter(p => !p.discordId);
-  const withDiscord = players.filter(p => p.discordId).length;
-  let html = `<span class="badge badge-ok"><span class="dot"></span>${players.length} players &middot; ${withDiscord} Discord-linked</span>`;
-  if (missing.length) {
-    html += `<div style="margin-top:8px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:7px;">`;
-    html += `<div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px;">No Discord linked (${missing.length})</div>`;
-    html += missing.map(p => `
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-        <span style="font-family:'Space Mono',monospace;font-size:0.75rem;color:var(--accent2);flex:0 0 auto;min-width:100px;overflow:hidden;text-overflow:ellipsis;">${p.tag}</span>
-        <input id="ml-${p.tag}" type="text" placeholder="Discord user ID" style="flex:1;font-size:0.72rem;padding:4px 7px;" autocomplete="off">
-        <button class="btn-sm" onclick="manualLink('${p.tag.replace(/'/g, "\\'")}')">Link</button>
-      </div>`).join('');
-    html += `</div>`;
-  }
-  document.getElementById('csvStatus').innerHTML = html;
-}
+// (Attendee/CSV logic moved to csv-handler.js)
 
-function loadCSV(file) {
-  if (!file) return;
-  const slugMatch = file.name.match(/^attendeeList_(.+?)_\d{4}-\d{2}-\d{2}_/);
-  if (slugMatch) {
-    document.getElementById('tournamentSlug').value = slugMatch[1];
-    localStorage.setItem('abbey_tournament_slug', slugMatch[1]);
-  }
-  Papa.parse(file, {
-    header: true, skipEmptyLines: true,
-    complete(results) {
-      players = results.data.map(row => ({
-        tag: row['GamerTag']?.trim() || '',
-        shortTag: row['Short GamerTag']?.trim() || row['GamerTag']?.trim() || '',
-        discordId: row['Discord ID']?.trim() || '',
-      })).filter(p => p.tag);
-      tagMap.clear();
-
-      // Apply Discord ID overrides
-      for (const p of players) {
-        if (!p.discordId && discordOverrides[p.tag.toLowerCase()])
-          p.discordId = discordOverrides[p.tag.toLowerCase()];
-      }
-
-      // ─── Priority-aware tagMap population ───────────────────
-      // Bug fix: Previously, a player's stripped/short name could overwrite
-      // another player's full-tag entry (e.g. "TSM | Bob" stripped → "bob"
-      // would clobber the entry for player "Bob"), causing wrong Discord pings.
-
-      // Pass 1 (highest priority): full tags. Direct match always wins.
-      for (const p of players) {
-        tagMap.set(p.tag.toLowerCase(), p);
-      }
-
-      // Pass 2: normalized full tags (consistent pipe spacing)
-      for (const p of players) {
-        const normalized = p.tag.replace(/\s*\|\s*/g, ' | ').trim().toLowerCase();
-        if (!tagMap.has(normalized)) tagMap.set(normalized, p);
-      }
-
-      // Detect ambiguous short/stripped names (so we don't auto-link wrongly)
-      const shortCounts = new Map();
-      const strippedCounts = new Map();
-      for (const p of players) {
-        if (p.shortTag) {
-          const st = p.shortTag.toLowerCase();
-          if (st !== p.tag.toLowerCase()) shortCounts.set(st, (shortCounts.get(st) || 0) + 1);
-        }
-        const stripped = p.tag.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
-        if (stripped && stripped !== p.tag.toLowerCase()) {
-          strippedCounts.set(stripped, (strippedCounts.get(stripped) || 0) + 1);
-        }
-      }
-
-      // Pass 3: short tags — only if unambiguous AND key isn't already a full tag
-      for (const p of players) {
-        if (p.shortTag) {
-          const st = p.shortTag.toLowerCase();
-          if (!tagMap.has(st) && (shortCounts.get(st) || 0) <= 1) {
-            tagMap.set(st, p);
-          }
-        }
-      }
-
-      // Pass 4: stripped tags — only if unambiguous AND key isn't already a full tag
-      for (const p of players) {
-        const stripped = p.tag.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
-        if (stripped && !tagMap.has(stripped) && (strippedCounts.get(stripped) || 0) <= 1) {
-          tagMap.set(stripped, p);
-        }
-      }
-
-      // Save full discord map to localStorage so refresh doesn't wipe it
-      const discordMap = {};
-      for (const p of players) { if (p.discordId) discordMap[p.tag.toLowerCase()] = p.discordId; }
-      localStorage.setItem('abbey_discord_map', JSON.stringify(discordMap));
-      renderCsvStatus();
-    }
-  });
-}
-
-const dz = document.getElementById('dropZone');
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) loadCSV(f); });
 
 // ─────────────────────────────────────────────────────────────
 // API
@@ -471,7 +374,25 @@ async function loadPhaseGroups() {
   const status = $('pgLoadStatus');
   btn.textContent = '⏳'; btn.disabled = true; status.textContent = '';
   try {
-    const data = await sggQuery(`query { ${eventField} { phases { id name phaseOrder phaseGroups(query: { page: 1, perPage: 20 }) { nodes { id displayIdentifier state } } } } }`);
+    const data = await sggQuery(`query {
+      ${eventField} {
+        tournament {
+          streams { id streamName }
+          stations(page: 1, perPage: 100) { nodes { id number } }
+        }
+        phases {
+          id name phaseOrder
+          phaseGroups(query: { page: 1, perPage: 20 }) {
+            nodes { id displayIdentifier state }
+          }
+        }
+      }
+    }`);
+    const tourney = data?.data?.event?.tournament;
+    if (tourney) {
+      streamList = tourney.streams || [];
+      stationList = (tourney.stations?.nodes || []).sort((a, b) => a.number - b.number);
+    }
     const phases = data?.data?.event?.phases || [];
     const savedFilter = localStorage.getItem('abbey_pg_filter') || '';
     const savedIds = savedFilter ? savedFilter.split(',').map(s => s.trim()) : [];
@@ -505,21 +426,8 @@ async function loadPhaseGroups() {
       container.appendChild(row);
     }
 
-    // Populate Stream Station dropdown
-    const stnSelect = document.getElementById('streamStationId');
-    if (stnSelect) {
-      const savedStn = localStorage.getItem('abbey_stream_station_id') || '';
-      const stations = await sggQuery(`query { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } } } }`);
-      const nodes = stations?.data?.event?.tournament?.stations?.nodes || [];
-      stnSelect.innerHTML = '<option value="">None (Use stream only)</option>';
-      for (const stn of nodes.sort((a, b) => a.number - b.number)) {
-        const opt = document.createElement('option');
-        opt.value = String(stn.id);
-        opt.textContent = `Station ${stn.number}`;
-        opt.selected = String(stn.id) === savedStn;
-        stnSelect.appendChild(opt);
-      }
-    }
+    // Consolidate dropdown population to a single robust function
+    renderStreamSetupSelectors();
 
     btn.textContent = '↻ Refresh';
     updateFilterBar();
@@ -633,6 +541,15 @@ function buildNormalQueuePing({ mA, mB, streamLabel, roundText }) {
   );
 }
 
+function buildNormalRerouteToQueuePing({ mA, mB, streamLabel, roundText, fromLoc }) {
+  return (
+    `🔄 **Plans changed** — ${mA} vs ${mB}\n` +
+    `Scratch ${fromLoc} — you've been moved to the **${streamLabel}** queue *(${roundText})*\n` +
+    `Wrap up where you are and stay nearby. We'll ping again when you're called to the stream setup.\n` +
+    `——————————————————`
+  );
+}
+
 function buildNormalStreamCallPing({ mA, mB, streamLabel, roundText }) {
   return (
     `🎥 **You're up on stream** — ${mA} vs ${mB}\n` +
@@ -662,6 +579,16 @@ function buildCringeQueuePing({ mA, mB, streamLabel, roundText }) {
     `${pick(PING_QUEUE_CRINGE)}\n` +
     `${mA} vs ${mB} → 🎬 queued for **${streamLabel}** *(${roundText})*\n` +
     `Don't wander off bestie ✨ we'll ping again when ur up\n` +
+    `——————————————————\n` +
+    `${PING_DISCLAIMER}`
+  );
+}
+
+function buildCringeRerouteToQueuePing({ mA, mB, streamLabel, roundText, fromLoc }) {
+  return (
+    `${pick(PING_QUEUE_CRINGE)}\n` +
+    `${mA} vs ${mB}: forget ${fromLoc} bestie 💅 you've been rerouted to the **${streamLabel}** queue *(${roundText})*\n` +
+    `Hold tight ✨ we'll ping when ur up\n` +
     `——————————————————\n` +
     `${PING_DISCLAIMER}`
   );
@@ -710,6 +637,26 @@ function buildQueuePing({ mA, mB, streamLabel, roundText }) {
     body =
       `✨🌟✨ **A SHINY QUEUE PLACEMENT** ✨🌟✨\n` +
       `*(1/8192 odds — extremely rare flex)*\n\n` +
+      body +
+      `\n🌈 *Today is your day.*`;
+  }
+  return { content: body, shiny };
+}
+
+// Use this when a set was already pinged to a station and is now being
+// rerouted to the stream queue (TO assigned a stream to it externally on
+// start.gg). Different ping than buildQueuePing because the player already
+// got a "go to Station X" message — this one tells them to ignore that.
+function buildRerouteToQueuePing({ mA, mB, streamLabel, roundText, fromLoc }) {
+  const shiny = rollShiny();
+  const cringe = rollCringe();
+  let body = cringe
+    ? buildCringeRerouteToQueuePing({ mA, mB, streamLabel, roundText, fromLoc })
+    : buildNormalRerouteToQueuePing({ mA, mB, streamLabel, roundText, fromLoc });
+  if (shiny) {
+    body =
+      `✨🌟✨ **A SHINY REROUTE** ✨🌟✨\n` +
+      `*(1/8192 odds — extremely rare)*\n\n` +
       body +
       `\n🌈 *Today is your day.*`;
   }
@@ -1042,7 +989,7 @@ async function enforceAutoDQManual(setId) {
 function addPollLog(msg, type = '') {
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   pollLogEntries.unshift({ time, msg, type });
-  if (pollLogEntries.length > 40) pollLogEntries.pop();
+  if (pollLogEntries.length > 200) pollLogEntries.pop();
   const el = document.getElementById('pollLog');
   if (el) el.innerHTML = pollLogEntries.map(e => `<div class="entry ${e.type}">[${e.time}] ${e.msg}</div>`).join('');
 }
@@ -1050,6 +997,85 @@ function addPollLog(msg, type = '') {
 function copyPollLog() {
   const text = pollLogEntries.map(e => `[${e.time}] ${e.msg}`).join('\n');
   navigator.clipboard.writeText(text).then(() => toast('Log copied to clipboard!'));
+}
+
+// Strip the "SPONSOR | " prefix from an entrant name for compact log lines.
+// Falls back to the CSV's Short GamerTag if loaded, else the substring after
+// the last `|`. Returns '???' for empty/missing names.
+function compactName(name) {
+  if (!name) return '???';
+  const player = (typeof tagMap !== 'undefined' && tagMap.get)
+    ? tagMap.get(String(name).toLowerCase())
+    : null;
+  if (player?.shortTag) return player.shortTag;
+  const parts = String(name).split('|').map(s => s.trim()).filter(Boolean);
+  return parts[parts.length - 1] || String(name);
+}
+
+// Render a one-line summary of a set: "Haiku/shoe(R3)" — short tags + round.
+function compactSet(set) {
+  if (!set) return '?';
+  const a = compactName(set.slots?.[0]?.entrant?.name);
+  const b = compactName(set.slots?.[1]?.entrant?.name);
+  // Strip "Winners "/"Losers " prefix and roman-numeral noise to keep round
+  // tags short. "Winners Round 3" -> "WR3", "Losers Quarter-Final" -> "LQF".
+  const round = (set.fullRoundText || '')
+    .replace(/Winners\s+/i, 'W')
+    .replace(/Losers\s+/i, 'L')
+    .replace(/Round\s+/i, 'R')
+    .replace(/Quarter-?Final/i, 'QF')
+    .replace(/Semi-?Final/i, 'SF')
+    .replace(/Grand\s*Final(?:\s*Reset)?/i, m => /reset/i.test(m) ? 'GFR' : 'GF')
+    .replace(/\s+/g, '')
+    .slice(0, 6);
+  return round ? `${a}/${b}(${round})` : `${a}/${b}`;
+}
+
+// Build the per-cycle state snapshot: 3 lines (streams, stations, tracked sets).
+// Returns an array of strings ready to feed to addPollLog. Designed to fit
+// what start.gg sent us THIS poll, before any of the poll's mutations run.
+function buildPollSnapshot(allSets, freeLocs) {
+  const active = allSets.filter(s => s.state === 2 || s.state === 6);
+
+  // 🎬 Per-stream view: who's live and what's queued
+  const streamParts = streamList.map(stream => {
+    const sid = String(stream.id);
+    const live = active.filter(s => String(s.stream?.id) === sid);
+    const liveLabel = live.length
+      ? live.map(s => `${s.state === 2 ? '▶' : '⏸'}${compactSet(s)}`).join(',')
+      : '—';
+    const queue = streamQueues[sid] || [];
+    const queueLabel = queue.length
+      ? queue.map(setId => compactSet(allSets.find(x => String(x.id) === String(setId)))).join(',')
+      : '—';
+    return `${stream.streamName}[live:${liveLabel} · queue:${queueLabel}]`;
+  });
+  const streamsLine = streamParts.length
+    ? `🎬 ${streamParts.join(' ')}`
+    : `🎬 (no streams configured)`;
+
+  // 🏟 Per-station view: occupied stations with names, plus free station numbers
+  const stnByNum = new Map();
+  for (const s of active) {
+    if (s.station?.number && !s.stream?.id) {
+      stnByNum.set(s.station.number, compactSet(s));
+    }
+  }
+  const occupied = [...stnByNum.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([num, label]) => `${num}:${label}`)
+    .join(' · ');
+  const freeStnNums = freeLocs
+    .filter(l => l.type === 'station')
+    .map(l => l.sortIdx)
+    .sort((a, b) => a - b);
+  const stationsLine = `🏟 ${occupied || '—'} (free:${freeStnNums.join(',') || 'none'})`;
+
+  // 🧠 Tracking-set sizes — useful for spotting stuck/leaked entries
+  const totalQueued = Object.values(streamQueues).reduce((n, q) => n + (q?.length || 0), 0);
+  const trackedLine = `🧠 announced=${announcedSetIds.size} streamCalled=${streamAnnouncedSetIds.size} queuePinged=${queuePingedSetIds.size} inQueues=${totalQueued} completed=${completedSetIds.size}`;
+
+  return [streamsLine, stationsLine, trackedLine];
 }
 
 function updateVenueDashboardUI(allSets) {
@@ -1125,6 +1151,7 @@ async function fetchAndPopulateStreams() {
     const data = await sggQuery(`query { ${eventField} { tournament { streams { id streamName } } } }`);
     streamList = data?.data?.event?.tournament?.streams || [];
     renderPriorityStreamSelector();
+    renderStreamSetupSelectors();
     toast(`✓ ${streamList.length} streams loaded`);
   } catch (e) { toast(`✗ ${e.message}`, true); }
 }
@@ -1150,6 +1177,45 @@ function renderPriorityStreamSelector() {
     opt.selected = String(s.id) === saved;
     sel.appendChild(opt);
   }
+}
+
+function renderStreamSetupSelectors() {
+  const mainStr = document.getElementById('mainStreamId');
+  const mainStn = document.getElementById('mainStreamStationId');
+  const sideStr = document.getElementById('sideStreamId');
+  const sideStn = document.getElementById('sideStreamStationId');
+  
+  if (!mainStr || !mainStn || !sideStr || !sideStn) return;
+
+  const savedMainStr = localStorage.getItem('abbey_main_stream_id') || '';
+  const savedMainStn = localStorage.getItem('abbey_main_stream_station_id') || '';
+  const savedSideStr = localStorage.getItem('abbey_side_stream_id') || '';
+  const savedSideStn = localStorage.getItem('abbey_side_stream_station_id') || '';
+
+  const populate = (el, list, savedId, defaultLabel, isStream) => {
+    el.innerHTML = '';
+    const def = document.createElement('option');
+    def.value = '';
+    def.textContent = defaultLabel;
+    el.appendChild(def);
+
+    for (const item of list) {
+      const opt = document.createElement('option');
+      opt.value = String(item.id);
+      opt.textContent = isStream ? item.streamName : `Station ${item.number}`;
+      if (String(item.id) === String(savedId)) opt.selected = true;
+      el.appendChild(opt);
+    }
+  };
+
+  populate(mainStr, streamList, savedMainStr, 'Select Stream...', true);
+  populate(sideStr, streamList, savedSideStr, 'Select Stream...', true);
+  populate(mainStn, stationList, savedMainStn, 'No dedicated station', false);
+  populate(sideStn, stationList, savedSideStn, 'No dedicated station', false);
+
+  // Note: no toast/poll-log here — this function is called on every tab
+  // switch and every fetchManualSets, so any output would spam. The
+  // user-facing "streams loaded" toast lives in fetchAndPopulateStreams.
 }
 
 function getPhaseTiers() {
@@ -1246,13 +1312,35 @@ async function doPoll() {
   try {
     const [setData, venueData] = await Promise.all([
       sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
-      sggQuery(`query PollVenue { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } streams { id streamName } } } }`).catch(() => null)
+      sggQuery(`query PollVenue { ${eventField} { tournament { id streams { id streamName } stations(page: 1, perPage: 100) { nodes { id number } } } } }`).catch(() => null)
     ]);
 
     const allSets = setData?.data?.event?.sets?.nodes || [];
-    if (venueData) {
-      stationList = venueData.data.event.tournament.stations.nodes || [];
-      streamList = venueData.data.event.tournament.streams || [];
+    if (venueData?.data?.event?.tournament) {
+      const tourney = venueData.data.event.tournament;
+      stationList = (tourney.stations?.nodes || []).sort((a, b) => a.number - b.number);
+      streamList = tourney.streams || [];
+      
+      // SYNC STREAM QUEUE: Fetch official queue if tournamentId is available
+      if (tourney.id) {
+        try {
+          const qData = await sggQuery(`query { streamQueue(tournamentId: ${tourney.id}) { stream { id } sets { id } } }`);
+          const officialQueues = qData?.data?.streamQueue || [];
+          // Update local streamQueues to match start.gg exactly
+          const newQueues = {};
+          for (const q of officialQueues) {
+            if (q.stream?.id) {
+              newQueues[String(q.stream.id)] = (q.sets || []).map(s => String(s.id));
+            }
+          }
+          // Merge logic: only overwrite if start.gg has data for that stream.
+          // This prevents clearing a local queue if start.gg is slow to respond.
+          for (const sid of Object.keys(newQueues)) {
+            streamQueues[sid] = newQueues[sid];
+          }
+          saveStreamQueues();
+        } catch (qErr) { addPollLog(`⚠️ StreamQueue Sync failed: ${qErr.message}`, 'err'); }
+      }
     }
 
     const { freeLocs } = updateVenueDashboardUI(allSets);
@@ -1267,6 +1355,16 @@ async function doPoll() {
     const lowestPhase = getLowestIncompletePhase();
     const lockedPending = pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
     addPollLog(`📊 auto:${autoOn ? "ON" : "OFF"} | bypassPhase:${bypassPhase ? "ON" : "OFF"} | total:${allSets.length} | pending:${pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${stationList.length} str:${streamList.length}) | active:${activeSetsData.length}`);
+
+    // Per-cycle state snapshot: streams + queues, stations + occupants,
+    // tracking-set sizes. Reflects what start.gg sent us this poll, BEFORE
+    // any mutations the poll is about to apply (auto-assigns, queue moves,
+    // etc.) — those will show up as their own log lines below.
+    try {
+      for (const line of buildPollSnapshot(allSets, freeLocs)) addPollLog(line);
+    } catch (e) {
+      addPollLog(`⚠️ snapshot failed: ${e.message}`, 'err');
+    }
 
     // 1. EXTERNAL CALL DETECTOR — process externally-called sets before auto-assigning
     const calledSets = allSets.filter(s => s.state === 6);
@@ -1324,11 +1422,11 @@ async function doPoll() {
     // 1.5 EXTERNAL STREAM-ASSIGNMENT DETECTOR + AUTO-PROMOTION
     //
     // First, track which streams are currently occupied by a live set (state 2 or 6)
+    // Build initial occupied set based on fetched data
     const occupiedStreamIds = new Set();
-    for (const set of allSets) {
-      if (set.stream?.id && (set.state === 2 || set.state === 6)) {
-        occupiedStreamIds.add(String(set.stream.id));
-      }
+    const liveSets = allSets.filter(s => (s.state === 2 || s.state === 6) && s.stream?.id);
+    for (const s of liveSets) {
+      occupiedStreamIds.add(String(s.stream.id));
     }
 
     for (const set of allSets) {
@@ -1338,39 +1436,78 @@ async function doPoll() {
       const stream = streamList.find(s => String(s.id) === streamId) || { id: streamId, streamName: set.stream.streamName };
 
       // Always idempotently keep locks in sync with the source of truth.
-      // (Active sets only — pending shouldn't lock a stream.)
       if (set.state === 2 || set.state === 6) {
         recentlyAssignedLocs.set(streamId, Date.now());
         if (set.station?.id) recentlyAssignedLocs.delete(String(set.station.id));
       }
 
       if (set.state === 1) {
-        // PENDING — add to queue if not already queued, send queue ping (or
-        // wait for cleanup pass to ping when entrants resolve).
+        // PENDING — add to queue if not already queued
         const existing = findQueueAssignment(set.id);
         if (!existing || existing.streamId !== streamId) {
-          addToStreamQueue(set.id, streamId, { quiet: true });
+          await addToStreamQueue(set.id, streamId, { quiet: true });
           addPollLog(`📋 Ext. Pre-Assigned: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (queued)`, 'new');
-          // Try to ping now if filled. cleanStreamQueues handles unfilled sets.
           await sendQueuePingForSet(set, stream);
         }
       } else if (set.state === 2 || set.state === 6) {
         // CALLED / IN-PROGRESS — check if the stream is busy.
         const hasQueue = (streamQueues[streamId] || []).length > 0;
-        const someoneElseLive = allSets.some(s => s.stream?.id && String(s.stream.id) === streamId && String(s.id) !== sid && (s.state === 2 || s.state === 6));
+        // Only move to queue if there is ALREADY another set live on this stream.
+        const someoneElseLive = liveSets.some(s => String(s.stream?.id) === streamId && String(s.id) !== sid);
         const isQueuedHere = (streamQueues[streamId] || []).some(x => String(x) === sid);
+        
+        // STABILITY FIX: If THIS set was already the one we announced as live for this stream, 
+        // we should NEVER move it to the queue, even if someone else is now marked live on start.gg.
+        const alreadyAnnounced = streamAnnouncedSetIds.has(sid);
 
-        if (!isQueuedHere && (hasQueue || someoneElseLive)) {
-          // Stream is busy! Move this set to the bottom of the queue instead of treating it as live.
-          // addToStreamQueue will automatically call resetSet and put it at the end.
+        if (!isQueuedHere && someoneElseLive && !alreadyAnnounced) {
+          // Stream is busy! Move this set to the bottom of the queue.
           addPollLog(`📋 Ext. Assigned: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (busy, moving to queue)`, 'new');
           await addToStreamQueue(set.id, streamId, { quiet: true });
           await sendQueuePingForSet(set, stream);
           continue; 
         }
 
-        // If we get here, the set is considered "Live" on the stream.
-        // Make sure it's not still sitting in any queue.
+        // EDGE CASE: a set that was already auto-pinged to a station (player
+        // got "go to Station X" on Discord) just got externally rerouted to a
+        // stream by the TO. We CANNOT announce them as "up on stream right
+        // now" — they were told seconds ago to head to a station. The right
+        // behavior is: reset to pending, add to the stream queue, and send
+        // a "plans changed" ping so they know the new destination.
+        //
+        // Note: this is NOT covered by the "busy stream" check above, because
+        // start.gg appears to silently strip the prior live set's stream when
+        // a new set is assigned (only one set can be on a stream at a time
+        // in their data model). So `someoneElseLive` evaluates false even
+        // though MDF still appears live in the local UI.
+        const wasPingedToStation = announcedSetIds.has(sid) && !streamAnnouncedSetIds.has(sid);
+        if (!isQueuedHere && wasPingedToStation && !alreadyAnnounced) {
+          const fromLoc = set.station?.number ? `Station ${set.station.number}` : 'their previous setup';
+          addPollLog(`🔄 Ext. Reroute: ${set.fullRoundText || 'Set ' + sid} was at ${fromLoc} → moving to 🎥 ${stream.streamName} queue`, 'new');
+          await addToStreamQueue(set.id, streamId, { quiet: true });
+
+          const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+          if (nA !== '???' && nB !== '???' && !queuePingedSetIds.has(sid)) {
+            queuePingedSetIds.add(sid);
+            const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+            const ping = buildRerouteToQueuePing({
+              mA, mB,
+              streamLabel: stream.streamName,
+              roundText: set.fullRoundText,
+              fromLoc,
+            });
+            try { await sendWebhook(ping.content); } catch (e) { }
+            if (ping.shiny) toast('✨ SHINY REROUTE! 1/8192');
+          }
+
+          // Defensively mark this stream as occupied for THIS poll cycle so
+          // the auto-promote loop below doesn't immediately yank our just-
+          // queued set back into live state on the same tick.
+          occupiedStreamIds.add(streamId);
+          continue;
+        }
+
+        // Live path
         for (const otherSid of Object.keys(streamQueues)) {
           if (streamQueues[otherSid].some(x => String(x) === sid)) {
             streamQueues[otherSid] = streamQueues[otherSid].filter(x => String(x) !== sid);
@@ -1378,7 +1515,6 @@ async function doPoll() {
           }
         }
 
-        // First-time detection: ping Discord and log.
         if (!streamAnnouncedSetIds.has(sid)) {
           streamAnnouncedSetIds.add(sid);
           const wasCalled = set.state === 6;
@@ -1392,6 +1528,16 @@ async function doPoll() {
           try { await sendWebhook(ping.content); } catch (e) { }
           logMatch(nA, nB, `🎥 ${stream.streamName}`, 'stream-ext', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum, ping.shiny);
           addPollLog(`${ping.shiny ? '✨ SHINY' : '📺'} Ext. Stream ${wasCalled ? 'Call' : 'Assignment'}: ${nA} vs ${nB} → 🎥 ${stream.streamName}`, 'new');
+          
+          const targetStnId = getPlaceholderStationForStream(streamId);
+          if (targetStnId && String(set.station?.id) !== String(targetStnId)) {
+            addPollLog(`📍 [API] Auto-moving ext. stream set to placeholder station ${targetStnId}...`);
+            await sggQuery(`mutation { assignStation(setId: "${sid}", stationId: "${targetStnId}") { id } }`);
+            
+            addPollLog(`📺 [API] Re-assigning stream ${streamId} to ensure it sticks...`);
+            await sggQuery(`mutation { assignStream(setId: "${sid}", streamId: "${streamId}") { id } }`);
+          }
+
           if (ping.shiny) toast('✨ SHINY STREAM CALL! 1/8192');
           pingCount++;
         }
@@ -1409,11 +1555,15 @@ async function doPoll() {
           // Only promote if both entrants are filled
           if (nextSet && nextSet.slots?.[0]?.entrant?.name && nextSet.slots?.[1]?.entrant?.name) {
             addPollLog(`🎬 Stream ${stream.streamName} is free — auto-promoting next match ${nextSetId}`, 'new');
+            
+            // Mark as occupied IMMEDIATELY so we don't promote another set to the same stream this poll
+            occupiedStreamIds.add(sid);
+
             // Remove from queue first
             streamQueues[sid].shift();
             saveStreamQueues();
             // Call it
-            callQueuedSetToStream(nextSetId, stream.id, stream.streamName);
+            await callQueuedSetToStream(nextSetId, stream.id, stream.streamName);
           }
         }
       }
@@ -1454,6 +1604,12 @@ async function doPoll() {
         pending.sort((a, b) => (a.phaseGroup?.phase?.phaseOrder ?? 999) - (b.phaseGroup?.phase?.phaseOrder ?? 999));
       }
 
+      const mainPlaceholderId = localStorage.getItem('abbey_main_stream_station_id') || '';
+      const sidePlaceholderId = localStorage.getItem('abbey_side_stream_station_id') || '';
+      const availableStations = freeLocs
+        .filter(loc => loc.type === 'station')
+        .filter(loc => String(loc.id) !== mainPlaceholderId && String(loc.id) !== sidePlaceholderId);
+
       const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (pendingSetsData[0] ? String(pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
       addPollLog(`🔍 after-filters:${pending.length} | pgFilter:[${pgAllowed.join(',')}] | sample pgId:${samplePgId} | stns:${availableStations.length} (streams: manual queue)`);
 
@@ -1463,7 +1619,10 @@ async function doPoll() {
       // shouldn't be called to a station behind the scenes.
       const stationEligible = pending
         .filter(s => getSetStreamTier(s) === 'normal')
-        .filter(s => !isInAnyQueue(s.id));
+        .filter(s => !isInAnyQueue(s.id))
+        .filter(s => !s.stream?.id)
+        .filter(s => !streamAnnouncedSetIds.has(String(s.id)))
+        .filter(s => !announcedSetIds.has(String(s.id)));
 
       // Sort: phase order (lower first), then oldest first
       stationEligible.sort((a, b) => {
@@ -1528,6 +1687,8 @@ async function doPoll() {
     if (!document.querySelector('#activeSetList input:focus')) renderManualSets();
     if (!document.querySelector('#tab-hub input:focus')) renderPlayerHub();
     if (!document.querySelector('#tab-stream input:focus')) renderStreamQueue();
+    // Ensure Setup dropdowns update when streams/stations are fetched
+    renderStreamSetupSelectors();
 
   } catch (e) {
     addPollLog(`Error: ${e.message}`, 'err');
@@ -1622,16 +1783,22 @@ async function fetchManualSets() {
   try {
     const [setData, stationData, streamData] = await Promise.all([
       sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
-      sggQuery(`query { ${eventField} { tournament { stations(page: 1, perPage: 100) { nodes { id number } } } } }`).catch(() => null),
-      sggQuery(`query { ${eventField} { tournament { streams { id streamName } } } }`).catch(() => null)
+      sggQuery(`query { ${eventField} { tournament { streams { id streamName } stations(page: 1, perPage: 100) { nodes { id number } } } } }`).catch(() => null)
     ]);
     const allSets = setData?.data?.event?.sets?.nodes || [];
     allFetchedSets = allSets.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
     activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
     pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
-    if (stationData) stationList = stationData.data.event.tournament.stations.nodes.sort((a, b) => a.number - b.number);
-    if (streamData) streamList = streamData.data.event.tournament.streams || [];
-    renderManualSets(); renderPlayerHub(); renderStreamQueue(); updateVenueDashboardUI(allSets);
+    if (stationData?.data?.event?.tournament) {
+      const tourney = stationData.data.event.tournament;
+      if (tourney.stations?.nodes) {
+        stationList = tourney.stations.nodes.sort((a, b) => a.number - b.number);
+      }
+      if (tourney.streams) {
+        streamList = tourney.streams || [];
+      }
+    }
+    renderManualSets(); renderPlayerHub(); renderStreamQueue(); updateVenueDashboardUI(allSets); renderStreamSetupSelectors();
     if (btn) btn.textContent = 'Fetch ↓';
   } catch (e) {
     toast(`✗ ${e.message}`, true); if (btn) btn.textContent = 'Fetch ↓';
@@ -1943,6 +2110,17 @@ function isInAnyQueue(setId) {
   return false;
 }
 
+function getPlaceholderStationForStream(streamId) {
+  const mainStreamId = localStorage.getItem('abbey_main_stream_id');
+  const sideStreamId = localStorage.getItem('abbey_side_stream_id');
+  if (String(streamId) === String(mainStreamId)) {
+    return localStorage.getItem('abbey_main_stream_station_id') || '';
+  } else if (String(streamId) === String(sideStreamId)) {
+    return localStorage.getItem('abbey_side_stream_station_id') || '';
+  }
+  return '';
+}
+
 async function addToStreamQueue(setId, streamId, opts = {}) {
   const sid = String(streamId);
   if (!streamQueues[sid]) streamQueues[sid] = [];
@@ -1980,11 +2158,20 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
     pendingSetsData.find(s => String(s.id) === String(setId));
 
   const autoStreamAssign = localStorage.getItem('abbey_auto_stream_assign') !== '0';
-  const streamStationId = localStorage.getItem('abbey_stream_station_id') || '';
+  const mainStreamId = localStorage.getItem('abbey_main_stream_id');
+  const sideStreamId = localStorage.getItem('abbey_side_stream_id');
+  
+  let targetStationId = '';
+  if (String(streamId) === String(mainStreamId)) {
+    targetStationId = localStorage.getItem('abbey_main_stream_station_id') || '';
+  } else if (String(streamId) === String(sideStreamId)) {
+    targetStationId = localStorage.getItem('abbey_side_stream_station_id') || '';
+  }
 
-  // 1. If the set is currently active (state 2 or 6) or has a station, reset it to pending (state 1).
+  // 1. If the set is currently active (state 2 or 6), reset it to pending (state 1).
   // This removes it from the "Active Matches" pool and frees the old station.
-  if (setObj && (setObj.station?.id || setObj.state === 2 || setObj.state === 6)) {
+  // If it's already pending (state 1), we skip the reset to avoid clearing existing assignments.
+  if (setObj && (setObj.state === 2 || setObj.state === 6)) {
     try {
       await sggQuery(`mutation { resetSet(setId: "${setId}") { id state } }`);
       // Locally reflect the reset
@@ -2004,34 +2191,32 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
   }
 
   // 2. Perform stream and dedicated station assignment if enabled.
-  if (autoStreamAssign) {
+  if (autoStreamAssign && !opts.localOnly) {
     try {
-      addPollLog(`📺 Auto-assigning ${setId} to stream ${streamId}...`);
-      await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
+      if (targetStationId) {
+        addPollLog(`📍 [API] Assigning ${setId} to station ${targetStationId}...`);
+        const resStn = await sggQuery(`mutation { assignStation(setId: "${setId}", stationId: "${targetStationId}") { id } }`);
+        addPollLog(`✅ [API] Station assigned: ${JSON.stringify(resStn?.data?.assignStation || 'OK')}`);
+        if (setObj) setObj.station = { id: targetStationId };
+      }
 
-      // Update local state so UI reflects the assignment immediately
+      addPollLog(`📺 [API] Assigning ${setId} to stream ${streamId}...`);
+      const resStr = await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
+      addPollLog(`✅ [API] Stream assigned: ${JSON.stringify(resStr?.data?.assignStream || 'OK')}`);
+      
       const streamObj = streamList.find(s => String(s.id) === String(streamId));
       if (setObj && streamObj) {
         setObj.stream = { id: streamId, streamName: streamObj.streamName };
       }
 
-      if (streamStationId) {
-        addPollLog(`📍 Also assigning to stream station ${streamStationId}...`);
-        await sggQuery(`mutation { assignStation(setId: "${setId}", stationId: "${streamStationId}") { id } }`);
-
-        // Update local state for station
-        if (setObj) {
-          // If stationList isn't available, we'll just use the ID. 
-          // The next poll will fill in the details anyway.
-          setObj.station = { id: streamStationId };
-        }
-      }
-      toast('📺 Auto-assigned to stream');
+      toast('📺 Assigned to stream');
     } catch (e) {
-      addPollLog(`⚠️ Auto-assign failed for ${setId}: ${e.message}`, 'err');
+      addPollLog(`❌ [API] Stream/Station assign failed for ${setId}: ${e.message}`, 'err');
     }
   }
 
+  // Ensure unfilled sets are at the bottom
+  sortStreamQueue(sid);
   renderStreamQueue();
   if (alreadyHere) { toast('Already in this queue'); return; }
   toast('Added to queue');
@@ -2090,6 +2275,28 @@ function moveInStreamQueue(setId, streamId, dir) {
   renderStreamQueue();
 }
 
+/**
+ * Sorts a stream's queue to ensure that sets with "TBD" entrants (unfilled)
+ * are always pushed to the bottom. Filled sets maintain their relative order.
+ */
+function sortStreamQueue(streamId) {
+  const sid = String(streamId);
+  const queue = streamQueues[sid] || [];
+  if (!queue.length) return;
+
+  const filled = [], unfilled = [];
+  for (const setId of queue) {
+    const set = allFetchedSets.find(s => String(s.id) === String(setId)) ||
+      activeSetsData.find(s => String(s.id) === String(setId)) ||
+      pendingSetsData.find(s => String(s.id) === String(setId));
+    const isFilled = !!(set?.slots?.[0]?.entrant?.name && set?.slots?.[1]?.entrant?.name);
+    if (isFilled) filled.push(setId);
+    else unfilled.push(setId);
+  }
+  streamQueues[sid] = [...filled, ...unfilled];
+  saveStreamQueues();
+}
+
 // Strip out finished/missing/already-on-stream sets — runs after every poll.
 // Also reconciles: any unfilled pending set in the queue that NOW has both
 // entrants gets a queue ping (since we couldn't ping when it was added).
@@ -2103,12 +2310,18 @@ function cleanStreamQueues() {
       const s = activeSetsData.find(x => String(x.id) === String(setId)) ||
         pendingSetsData.find(x => String(x.id) === String(setId)) ||
         allFetchedSets.find(x => String(x.id) === String(setId));
-      if (!s) return false; // set vanished from event
+      
+      // If the set isn't in our current fetch, it might be further down in the bracket.
+      // We only remove it if we explicitly find it in a completed state.
+      if (!s) return true; 
       if (s.state === 3) return false; // completed
       if (s.stream?.id && String(s.stream.id) !== sid) return false; // moved to different stream by external action
       return true;
     });
-    if (streamQueues[sid].length !== before) changed = true;
+    if (streamQueues[sid].length !== before) {
+      changed = true;
+      sortStreamQueue(sid);
+    }
 
     // Reconciliation pass: identify queued sets whose entrants just got filled
     // in (e.g. winners-side feeds into a Top 8 set), so we can ping them now.
@@ -2196,14 +2409,25 @@ async function callQueuedSetToStream(setId, streamId, streamName) {
 
   try {
     // "Call" the set on start.gg (moves State 1 -> 6). This makes it official.
-    // We catch errors here in case it's already state 6 or 2.
     try {
-      await sggQuery(`mutation { markSetInProgress(setId: "${setId}") { id state } }`);
+      addPollLog(`🎬 [API] Marking set ${setId} in progress...`);
+      const resProg = await sggQuery(`mutation { markSetInProgress(setId: "${setId}") { id state } }`);
+      addPollLog(`✅ [API] Set state: ${JSON.stringify(resProg?.data?.markSetInProgress || 'OK')}`);
     } catch (err) {
-      console.warn('markSetInProgress failed (set might already be active):', err);
+      addPollLog(`⚠️ [API] markSetInProgress failed (set might already be active): ${err.message}`, 'err');
     }
 
-    await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
+    const targetStnId = getPlaceholderStationForStream(streamId);
+    if (targetStnId) {
+      addPollLog(`📍 [API] Assigning promoted set ${setId} to station ${targetStnId}...`);
+      const resStn = await sggQuery(`mutation { assignStation(setId: "${setId}", stationId: "${targetStnId}") { id } }`);
+      addPollLog(`✅ [API] Station assigned: ${JSON.stringify(resStn?.data?.assignStation || 'OK')}`);
+    }
+
+    addPollLog(`📺 [API] Assigning promoted set ${setId} to stream ${streamId}...`);
+    const resStr = await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
+    addPollLog(`✅ [API] Stream assigned: ${JSON.stringify(resStr?.data?.assignStream || 'OK')}`);
+
     set.stream = { id: streamId, streamName: streamName };
     set.state = 6; // Locally mark as Called
     recentlyAssignedLocs.set(String(streamId), Date.now());
@@ -2627,25 +2851,28 @@ function closeScoreOverlay() {
 }
 
 function updateOverlayScore() {
-  if (_overlayScoreA === null || _overlayScoreB === null) return;
+  if (_overlayScoreA === null && _overlayScoreB === null) return;
   const submitBtn = document.getElementById('scoreOverlayBtn');
-  if (_overlayScoreA === _overlayScoreB) {
+  const sA = _overlayScoreA === null ? 0 : _overlayScoreA;
+  const sB = _overlayScoreB === null ? 0 : _overlayScoreB;
+  if (sA === sB) {
     submitBtn.textContent = "Scores can't be tied — pick again";
     submitBtn.style.opacity = '0.4'; submitBtn.style.pointerEvents = 'none';
     return;
   }
-  const winnerName = _overlayScoreA > _overlayScoreB ? _overlayNameA : _overlayNameB;
-  const ws = Math.max(_overlayScoreA, _overlayScoreB), ls = Math.min(_overlayScoreA, _overlayScoreB);
+  const winnerName = sA > sB ? _overlayNameA : _overlayNameB;
+  const ws = Math.max(sA, sB), ls = Math.min(sA, sB);
   submitBtn.textContent = `Report: ${winnerName} Wins ${ws}-${ls}`;
   submitBtn.style.opacity = '1'; submitBtn.style.pointerEvents = 'auto';
 }
 
 async function submitOverlayScore() {
-  if (_overlaySetId === null || _overlayScoreA === null || _overlayScoreB === null) return;
-  if (_overlayScoreA === _overlayScoreB) { toast("Scores can't be tied", true); return; }
+  if (_overlaySetId === null || (_overlayScoreA === null && _overlayScoreB === null)) return;
+  const sA = _overlayScoreA === null ? 0 : _overlayScoreA;
+  const sB = _overlayScoreB === null ? 0 : _overlayScoreB;
+  if (sA === sB) { toast("Scores can't be tied", true); return; }
   const setId = _overlaySetId, idA = _overlayIdA, idB = _overlayIdB;
   const nameA = _overlayNameA, nameB = _overlayNameB;
-  const sA = _overlayScoreA, sB = _overlayScoreB;
   closeScoreOverlay();
 
   // Capture the stream this set was on (if any) before reporting — once we
@@ -2713,13 +2940,15 @@ async function submitOverlayScore() {
 Object.assign(window, {
   addToStreamQueue, browseEvents, callQueuedSetToStream, callSetFromPanel,
   clearPhaseFilter, closeConfirmModal, closeScoreOverlay, copyPollLog,
-  fetchAndPopulateStreams, fetchManualSets, hubToggleWatch, loadCSV,
+  fetchAndPopulateStreams, fetchManualSets, hubToggleWatch,
   loadPhaseGroups, manualLink, markInProgressQuick, moveInStreamQueue,
   openScoreOverlay, promoteFromQueue, pullFromStream, removeFromStreamQueue,
   renderManualSets, requestDQ, requestHubDQ, requestMoveToStream, resetMatch,
   savePriorityStream, saveSettings, setScore, startPolling, stopPolling,
   submitOverlayScore, switchTab, toggleAddQueuePanel, toggleHubCheckin, toggleSetup
 });
+
+// (initDropZone moved to csv-handler.js)
 
 try { loadSettings(); } catch (e) { console.error('loadSettings failed:', e); }
 // Restore discord IDs from localStorage so page refresh doesn't wipe pings

@@ -1764,13 +1764,32 @@
       <hr class="section-sep">
 
       <div class="field">
-        <label>Stream Station <span style="color:var(--muted);font-size:0.7rem;">— dedicated station for stream
-            sets</span></label>
-        <div class="row" style="margin-bottom:0;">
-          <select id="streamStationId" onchange="saveSettings()">
-            <option value="">None (Use stream only)</option>
+        <label>Main Stream Setup</label>
+        <div class="row" style="margin-bottom:8px; gap:8px;">
+          <select id="mainStreamId" style="flex:1;" onchange="saveSettings()">
+            <option value="">Select Main Stream...</option>
           </select>
-          <button class="btn-sm" onclick="loadPhaseGroups()" style="white-space:nowrap;">↻ Refresh</button>
+          <select id="mainStreamStationId" style="flex:1;" onchange="saveSettings()">
+            <option value="">No dedicated station</option>
+          </select>
+        </div>
+        <div class="hint">Sets queued for the Main Stream will be assigned to this station.</div>
+      </div>
+
+      <div class="field">
+        <label>Sidestream Setup</label>
+        <div class="row" style="margin-bottom:8px; gap:8px;">
+          <select id="sideStreamId" style="flex:1;" onchange="saveSettings()">
+            <option value="">Select Sidestream...</option>
+          </select>
+          <select id="sideStreamStationId" style="flex:1;" onchange="saveSettings()">
+            <option value="">No dedicated station</option>
+          </select>
+        </div>
+        <div class="hint">Sets queued for the Sidestream will be assigned to this station.</div>
+        <div class="row" style="margin-top:10px;">
+          <button class="btn-sm" onclick="fetchManualSets()" style="white-space:nowrap; flex:1;">↻ Refresh Stations &
+            Streams</button>
         </div>
       </div>
 
@@ -2096,7 +2115,8 @@
     </div>
   </div>
 
-  <script src="/wp-content/uploads/matchcaller.js?v=13"></script>
+  <script src="/wp-content/uploads/matchcaller.js?v=15"></script>
+  <script src="/wp-content/uploads/csv-handler.js?v=1"></script>
 </body>
 
 </html>
