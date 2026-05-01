@@ -378,7 +378,7 @@ async function loadPhaseGroups() {
       ${eventField} {
         tournament {
           streams { id streamName }
-          stations(page: 1, perPage: 100) { nodes { id number } }
+          stations(page: 1, perPage: 30) { nodes { id number } }
         }
         phases {
           id name phaseOrder
@@ -1079,8 +1079,15 @@ function buildPollSnapshot(allSets, freeLocs) {
 }
 
 function updateVenueDashboardUI(allSets) {
+  // Stations that are reserved as stream placeholders are NEVER shown as
+  // free locations, never auto-assigned, and never count toward "free
+  // stations" UI. They exist only as the destination for sets that get
+  // moved to a stream.
+  const placeholderIds = getPlaceholderStationIds();
   const allLocs = [
-    ...stationList.map(s => ({ id: s.id, type: 'station', label: `Station ${s.number}`, sortIdx: s.number })),
+    ...stationList
+      .filter(s => !placeholderIds.has(String(s.id)))
+      .map(s => ({ id: s.id, type: 'station', label: `Station ${s.number}`, sortIdx: s.number })),
     ...streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
   ];
   const activeSets = allSets.filter(s => (s.state === 2 || s.state === 6) && (s.station || s.stream));
@@ -1196,7 +1203,12 @@ function renderStreamSetupSelectors() {
     el.innerHTML = '';
     const def = document.createElement('option');
     def.value = '';
-    def.textContent = defaultLabel;
+    // Show "(N available)" so the user can immediately tell whether the
+    // dropdown actually has options behind it. Without this, an empty list
+    // and an unfilled-but-populated list look identical when collapsed.
+    def.textContent = list.length > 0
+      ? `${defaultLabel} (${list.length} available)`
+      : `${defaultLabel} — none loaded`;
     el.appendChild(def);
 
     for (const item of list) {
@@ -1312,7 +1324,7 @@ async function doPoll() {
   try {
     const [setData, venueData] = await Promise.all([
       sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
-      sggQuery(`query PollVenue { ${eventField} { tournament { id streams { id streamName } stations(page: 1, perPage: 100) { nodes { id number } } } } }`).catch(() => null)
+      sggQuery(`query PollVenue { ${eventField} { tournament { id streams { id streamName } stations(page: 1, perPage: 30) { nodes { id number } } } } }`).catch(() => null)
     ]);
 
     const allSets = setData?.data?.event?.sets?.nodes || [];
@@ -1321,41 +1333,13 @@ async function doPoll() {
       stationList = (tourney.stations?.nodes || []).sort((a, b) => a.number - b.number);
       streamList = tourney.streams || [];
       
-      // SYNC STREAM QUEUE: Fetch official queue if tournamentId is available
-      if (tourney.id) {
-        try {
-          const qData = await sggQuery(`query { streamQueue(tournamentId: ${tourney.id}) { stream { id } sets { id } } }`);
-          const officialQueues = qData?.data?.streamQueue || [];
-
-          // start.gg's streamQueue field returns EVERY set that has a stream
-          // assigned, including the one that's currently live on it (state 2/6).
-          // Locally we only want pending sets in the queue — live sets are
-          // tracked separately as "on stream right now". Without this filter,
-          // the live set perpetually re-appears in the local queue every poll,
-          // which (a) makes our `isQueuedHere` check fire when it shouldn't and
-          // (b) breaks any "remove from queue" the live-path logic just did.
-          const liveSetIds = new Set(
-            allSets
-              .filter(s => s.state === 2 || s.state === 6)
-              .map(s => String(s.id))
-          );
-
-          const newQueues = {};
-          for (const q of officialQueues) {
-            if (q.stream?.id) {
-              newQueues[String(q.stream.id)] = (q.sets || [])
-                .map(s => String(s.id))
-                .filter(setId => !liveSetIds.has(setId));
-            }
-          }
-          // Merge logic: only overwrite if start.gg has data for that stream.
-          // This prevents clearing a local queue if start.gg is slow to respond.
-          for (const sid of Object.keys(newQueues)) {
-            streamQueues[sid] = newQueues[sid];
-          }
-          saveStreamQueues();
-        } catch (qErr) { addPollLog(`⚠️ StreamQueue Sync failed: ${qErr.message}`, 'err'); }
-      }
+      // NOTE: We deliberately do NOT sync from start.gg's streamQueue field.
+      // The local streamQueues object is the authoritative source of truth for
+      // queue ordering. start.gg's streamQueue is a flat list of every set
+      // with a stream assigned (including live sets) and overwriting locally
+      // from it created duplicate-entry and routing bugs. External assignments
+      // are still detected below via set.stream + set.state and routed into
+      // the local queue through addToStreamQueue.
     }
 
     const { freeLocs } = updateVenueDashboardUI(allSets);
@@ -1369,7 +1353,8 @@ async function doPoll() {
     const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
     const lowestPhase = getLowestIncompletePhase();
     const lockedPending = pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
-    addPollLog(`📊 auto:${autoOn ? "ON" : "OFF"} | bypassPhase:${bypassPhase ? "ON" : "OFF"} | total:${allSets.length} | pending:${pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${stationList.length} str:${streamList.length}) | active:${activeSetsData.length}`);
+    const usableStationCount = stationList.length - getPlaceholderStationIds().size;
+    addPollLog(`📊 auto:${autoOn ? "ON" : "OFF"} | bypassPhase:${bypassPhase ? "ON" : "OFF"} | total:${allSets.length} | pending:${pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${usableStationCount} str:${streamList.length}) | active:${activeSetsData.length}`);
 
     // Per-cycle state snapshot: streams + queues, stations + occupants,
     // tracking-set sizes. Reflects what start.gg sent us this poll, BEFORE
@@ -1436,12 +1421,15 @@ async function doPoll() {
 
     // 1.5 EXTERNAL STREAM-ASSIGNMENT DETECTOR + AUTO-PROMOTION
     //
-    // First, track which streams are currently occupied by a live set (state 2 or 6)
-    // Build initial occupied set based on fetched data
+    // Track which streams are currently occupied by a live set (state 2 or 6).
+    // The auto-promote loop later in this function uses this to skip streams
+    // that already have a set live on them. The state-2/6 detector branches
+    // also add to this set defensively to prevent same-poll double-promotion.
     const occupiedStreamIds = new Set();
-    const liveSets = allSets.filter(s => (s.state === 2 || s.state === 6) && s.stream?.id);
-    for (const s of liveSets) {
-      occupiedStreamIds.add(String(s.stream.id));
+    for (const s of allSets) {
+      if ((s.state === 2 || s.state === 6) && s.stream?.id) {
+        occupiedStreamIds.add(String(s.stream.id));
+      }
     }
 
     for (const set of allSets) {
@@ -1464,97 +1452,69 @@ async function doPoll() {
           addPollLog(`📋 Ext. Pre-Assigned: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (queued)`, 'new');
           await sendQueuePingForSet(set, stream);
         }
-      } else if (set.state === 2 || set.state === 6) {
-        // CALLED / IN-PROGRESS — check if the stream is busy.
-        const hasQueue = (streamQueues[streamId] || []).length > 0;
-        // Only move to queue if there is ALREADY another set live on this stream.
-        const someoneElseLive = liveSets.some(s => String(s.stream?.id) === streamId && String(s.id) !== sid);
+      } else if (set.state === 6) {
+        // CALLED + STREAM ASSIGNED — TO assigned a stream to a called set.
+        // Plan: pull it back into the local stream queue (always). The set
+        // gets reset to pending and the station is freed. The auto-promote
+        // loop below will pick the queue head when the stream is free.
+        // Nothing ever transitions directly from "external stream assignment"
+        // to "live on stream" — that path only exists via callQueuedSetToStream.
         const isQueuedHere = (streamQueues[streamId] || []).some(x => String(x) === sid);
-        
-        // STABILITY FIX: If THIS set was already the one we announced as live for this stream, 
-        // we should NEVER move it to the queue, even if someone else is now marked live on start.gg.
         const alreadyAnnounced = streamAnnouncedSetIds.has(sid);
+        if (isQueuedHere || alreadyAnnounced) continue;
 
-        if (!isQueuedHere && someoneElseLive && !alreadyAnnounced) {
-          // Stream is busy! Move this set to the bottom of the queue.
-          addPollLog(`📋 Ext. Assigned: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (busy, moving to queue)`, 'new');
-          await addToStreamQueue(set.id, streamId, { quiet: true });
-          await sendQueuePingForSet(set, stream);
-          continue; 
-        }
+        const wasPingedToStation = announcedSetIds.has(sid);
+        const fromLoc = wasPingedToStation && set.station?.number
+          ? `Station ${set.station.number}`
+          : null;
 
-        // EDGE CASE: a set that was already auto-pinged to a station (player
-        // got "go to Station X" on Discord) just got externally rerouted to a
-        // stream by the TO. We CANNOT announce them as "up on stream right
-        // now" — they were told seconds ago to head to a station. The right
-        // behavior is: reset to pending, add to the stream queue, and send
-        // a "plans changed" ping so they know the new destination.
-        //
-        // Note: this is NOT covered by the "busy stream" check above, because
-        // start.gg appears to silently strip the prior live set's stream when
-        // a new set is assigned (only one set can be on a stream at a time
-        // in their data model). So `someoneElseLive` evaluates false even
-        // though MDF still appears live in the local UI.
-        const wasPingedToStation = announcedSetIds.has(sid) && !streamAnnouncedSetIds.has(sid);
-        if (!isQueuedHere && wasPingedToStation && !alreadyAnnounced) {
-          const fromLoc = set.station?.number ? `Station ${set.station.number}` : 'their previous setup';
-          addPollLog(`🔄 Ext. Reroute: ${set.fullRoundText || 'Set ' + sid} was at ${fromLoc} → moving to 🎥 ${stream.streamName} queue`, 'new');
-          await addToStreamQueue(set.id, streamId, { quiet: true });
+        addPollLog(
+          fromLoc
+            ? `🔄 Ext. Reroute: ${set.fullRoundText || 'Set ' + sid} was at ${fromLoc} → 🎥 ${stream.streamName} queue`
+            : `📋 Ext. Stream Assigned: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} queue`,
+          'new'
+        );
+        await addToStreamQueue(set.id, streamId, { quiet: true });
 
-          const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
-          if (nA !== '???' && nB !== '???' && !queuePingedSetIds.has(sid)) {
-            queuePingedSetIds.add(sid);
-            const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
-            const ping = buildRerouteToQueuePing({
-              mA, mB,
-              streamLabel: stream.streamName,
-              roundText: set.fullRoundText,
-              fromLoc,
-            });
-            try { await sendWebhook(ping.content); } catch (e) { }
-            if (ping.shiny) toast('✨ SHINY REROUTE! 1/8192');
-          }
-
-          // Defensively mark this stream as occupied for THIS poll cycle so
-          // the auto-promote loop below doesn't immediately yank our just-
-          // queued set back into live state on the same tick.
-          occupiedStreamIds.add(streamId);
-          continue;
-        }
-
-        // Live path
-        for (const otherSid of Object.keys(streamQueues)) {
-          if (streamQueues[otherSid].some(x => String(x) === sid)) {
-            streamQueues[otherSid] = streamQueues[otherSid].filter(x => String(x) !== sid);
-            saveStreamQueues();
-          }
-        }
-
-        if (!streamAnnouncedSetIds.has(sid)) {
-          streamAnnouncedSetIds.add(sid);
-          const wasCalled = set.state === 6;
-          const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+        // Send appropriate ping. fromLoc → "plans changed" reroute ping.
+        // No fromLoc → fresh queue ping (TO assigned stream out of nowhere).
+        const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
+        if (nA !== '???' && nB !== '???' && !queuePingedSetIds.has(sid)) {
+          queuePingedSetIds.add(sid);
           const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
-          const ping = buildStreamCallPing({
-            mA, mB,
-            streamLabel: stream.streamName,
-            roundText: set.fullRoundText,
-          });
+          const ping = fromLoc
+            ? buildRerouteToQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText, fromLoc })
+            : buildQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText });
           try { await sendWebhook(ping.content); } catch (e) { }
-          logMatch(nA, nB, `🎥 ${stream.streamName}`, 'stream-ext', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum, ping.shiny);
-          addPollLog(`${ping.shiny ? '✨ SHINY' : '📺'} Ext. Stream ${wasCalled ? 'Call' : 'Assignment'}: ${nA} vs ${nB} → 🎥 ${stream.streamName}`, 'new');
-          
-          const targetStnId = getPlaceholderStationForStream(streamId);
-          if (targetStnId && String(set.station?.id) !== String(targetStnId)) {
-            addPollLog(`📍 [API] Auto-moving ext. stream set to placeholder station ${targetStnId}...`);
-            await sggQuery(`mutation { assignStation(setId: "${sid}", stationId: "${targetStnId}") { id } }`);
-            
-            addPollLog(`📺 [API] Re-assigning stream ${streamId} to ensure it sticks...`);
-            await sggQuery(`mutation { assignStream(setId: "${sid}", streamId: "${streamId}") { id } }`);
-          }
+          if (ping.shiny) toast(fromLoc ? '✨ SHINY REROUTE! 1/8192' : '✨ SHINY QUEUE PLACEMENT! 1/8192');
+        }
 
-          if (ping.shiny) toast('✨ SHINY STREAM CALL! 1/8192');
-          pingCount++;
+        // Defensively mark this stream as occupied for THIS poll cycle so
+        // the auto-promote loop below doesn't immediately yank our just-
+        // queued set back into live state on the same tick.
+        occupiedStreamIds.add(streamId);
+        continue;
+      } else if (set.state === 2) {
+        // IN-PROGRESS + STREAM ASSIGNED — set is actively being played and
+        // has a stream. Two cases:
+        //   1. We promoted it via callQueuedSetToStream → already in
+        //      streamAnnouncedSetIds, all housekeeping (placeholder station,
+        //      stream re-assign) was done at promotion time. Skip.
+        //   2. TO assigned stream mid-game → unusual. Track silently as
+        //      occupied (so auto-promote doesn't double up) and do the
+        //      placeholder swap to free the real station, but NEVER reset
+        //      state — players are mid-set and that would be destructive.
+        if (streamAnnouncedSetIds.has(sid)) continue;
+
+        streamAnnouncedSetIds.add(sid);
+        addPollLog(`📺 Mid-game stream assignment: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (no reset, no ping)`, 'new');
+        const targetStnId = getPlaceholderStationForStream(streamId);
+        if (targetStnId && String(set.station?.id) !== String(targetStnId)) {
+          try {
+            await sggQuery(`mutation { assignStation(setId: "${sid}", stationId: "${targetStnId}") { id } }`);
+          } catch (e) {
+            addPollLog(`⚠️ Mid-game placeholder swap failed for ${sid}: ${e.message}`, 'err');
+          }
         }
       }
     }
@@ -1798,7 +1758,7 @@ async function fetchManualSets() {
   try {
     const [setData, stationData, streamData] = await Promise.all([
       sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
-      sggQuery(`query { ${eventField} { tournament { streams { id streamName } stations(page: 1, perPage: 100) { nodes { id number } } } } }`).catch(() => null)
+      sggQuery(`query { ${eventField} { tournament { streams { id streamName } stations(page: 1, perPage: 30) { nodes { id number } } } } }`).catch(() => null)
     ]);
     const allSets = setData?.data?.event?.sets?.nodes || [];
     allFetchedSets = allSets.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
@@ -1824,6 +1784,11 @@ function renderManualSets() {
   const el = document.getElementById('manualSetList');
   if (!el) return;
   const selectedStates = (document.getElementById('setFetchState')?.value || '1,2,6').split(',').map(Number);
+  // Stations reserved as stream placeholders are excluded from the manual
+  // assignment dropdown so a TO can't accidentally send a non-streamed match
+  // to the stream station. Streams remain available in their own optgroup.
+  const placeholderIds = getPlaceholderStationIds();
+  const stationsForDropdown = stationList.filter(s => !placeholderIds.has(String(s.id)));
   // Sort by bracket stage (phaseOrder ascending) then by duration (oldest first)
   // For state 6 (called) and state 2 (in progress), use updatedAt as the call/start time
   // For state 1 (pending), use createdAt
@@ -1873,7 +1838,7 @@ function renderManualSets() {
       <div class="set-footer">
         <select id="stn-${set.id}" style="flex:1;font-size:0.78rem;">
           <option value="">No assignment</option>
-          ${stationList.length ? `<optgroup label="Stations">${stationList.map(s => `<option value="station:${s.id}" data-num="${s.number}" ${set.station?.number == s.number ? 'selected' : ''}>Station ${s.number}</option>`).join('')}</optgroup>` : ''}
+          ${stationsForDropdown.length ? `<optgroup label="Stations">${stationsForDropdown.map(s => `<option value="station:${s.id}" data-num="${s.number}" ${set.station?.number == s.number ? 'selected' : ''}>Station ${s.number}</option>`).join('')}</optgroup>` : ''}
           ${streamList.length ? `<optgroup label="Streams">${streamList.map(s => `<option value="stream:${s.id}" data-name="${s.streamName}" ${set.stream?.id == s.id ? 'selected' : ''}>🎥 ${s.streamName}</option>`).join('')}</optgroup>` : ''}
         </select>
         <button class="set-call-btn" onclick="callSetFromPanel('${set.id}')">📢 Call</button>
@@ -2064,8 +2029,14 @@ function renderStationSidebar() {
     }
   }
 
-  // Then stations sorted by number
-  const sortedStations = stationList.slice().sort((a, b) => a.number - b.number);
+  // Then stations sorted by number — excluding stream placeholder stations,
+  // which are tracked under their stream's row above and shouldn't appear
+  // as standalone station entries.
+  const placeholderIds = getPlaceholderStationIds();
+  const sortedStations = stationList
+    .filter(s => !placeholderIds.has(String(s.id)))
+    .slice()
+    .sort((a, b) => a.number - b.number);
   for (const stn of sortedStations) {
     const occupant = stationOccupants.get(String(stn.id));
     if (occupant) {
@@ -2134,6 +2105,21 @@ function getPlaceholderStationForStream(streamId) {
     return localStorage.getItem('abbey_side_stream_station_id') || '';
   }
   return '';
+}
+
+// Returns the set of station IDs configured as stream placeholders in the
+// Setup card. These stations exist on start.gg but are reserved exclusively
+// for stream-bound sets — they should NOT appear in free-station lists,
+// auto-assignment pools, or manual assignment dropdowns. The Setup card
+// dropdowns themselves are the only place that lists them (since picking
+// them is the whole point of those dropdowns).
+function getPlaceholderStationIds() {
+  const ids = new Set();
+  const main = localStorage.getItem('abbey_main_stream_station_id');
+  const side = localStorage.getItem('abbey_side_stream_station_id');
+  if (main) ids.add(String(main));
+  if (side) ids.add(String(side));
+  return ids;
 }
 
 async function addToStreamQueue(setId, streamId, opts = {}) {
