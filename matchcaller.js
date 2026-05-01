@@ -29,6 +29,12 @@ function loadStreamQueues() {
     streamQueues = raw ? JSON.parse(raw) : {};
     if (typeof streamQueues !== 'object' || streamQueues === null) streamQueues = {};
   } catch { streamQueues = {}; }
+  // Pre-mark all queue entries as already-pinged so the reconciliation pass in
+  // cleanStreamQueues doesn't fire Discord pings for stale entries from a
+  // previous session the first time their entrants resolve.
+  for (const ids of Object.values(streamQueues)) {
+    for (const id of ids) queuePingedSetIds.add(String(id));
+  }
 }
 function saveStreamQueues() {
   try { localStorage.setItem('abbey_stream_queues', JSON.stringify(streamQueues)); } catch { }
@@ -142,7 +148,10 @@ function renderHubChips() {
 
 function hubToggleWatch() {
   if (pollTimer) { stopPolling(); }
-  else { switchTab('auto'); startPolling(); switchTab('hub'); }
+  else {
+    const activeTab = document.querySelector('.tab-panel.active')?.id?.replace('tab-', '') || 'hub';
+    switchTab('auto'); startPolling(); switchTab(activeTab);
+  }
 }
 
 function updateHubWatchBtn() {
@@ -194,6 +203,9 @@ function saveSettings() {
   const adqInput = document.getElementById('autoDqToggle');
   if (adqInput) localStorage.setItem('abbey_auto_dq', adqInput.checked ? '1' : '0');
 
+  const aqcInput = document.getElementById('autoQueueCallToggle');
+  if (aqcInput) localStorage.setItem('abbey_auto_queue_call', aqcInput.checked ? '1' : '0');
+
   const dqTimer = document.getElementById('dqTimerInput');
   if (dqTimer) {
     const dqVal = parseFloat(dqTimer.value) || 5.5;
@@ -222,6 +234,9 @@ function loadSettings() {
 
   const adq = document.getElementById('autoDqToggle');
   if (adq) adq.checked = get('abbey_auto_dq') !== '0';
+
+  const aqc = document.getElementById('autoQueueCallToggle');
+  if (aqc) aqc.checked = get('abbey_auto_queue_call') !== '0'; // default ON
 
   const savedDq = get('abbey_dq_timer');
   if (savedDq) {
@@ -543,9 +558,9 @@ function buildNormalQueuePing({ mA, mB, streamLabel, roundText }) {
 
 function buildNormalRerouteToQueuePing({ mA, mB, streamLabel, roundText, fromLoc }) {
   return (
-    `🔄 **Plans changed** — ${mA} vs ${mB}\n` +
-    `Scratch ${fromLoc} — you've been moved to the **${streamLabel}** queue *(${roundText})*\n` +
-    `Wrap up where you are and stay nearby. We'll ping again when you're called to the stream setup.\n` +
+    `🔄 **Sorry for the double ping!** ${mA} vs ${mB}\n` +
+    `We're moving you from ${fromLoc} — you're now in the **${streamLabel}** stream queue *(${roundText})*\n` +
+    `Ignore the previous ping. Stay close and keep an eye on Discord — we'll ping again when you're called to the stream setup.\n` +
     `——————————————————`
   );
 }
@@ -935,7 +950,7 @@ async function submitDQ(setId, winnerId, loserId, winnerName, auto = false) {
     await sggQuery(`mutation DQSet { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", isDQ: true) { id state } }`);
     announcedSetIds.delete(String(setId));
     hubCheckins.delete(`${setId}-${winnerId}`); hubCheckins.delete(`${setId}-${loserId}`); saveCheckins();
-    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    // Leave _hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
     const entry = matchLog.find(e => e.setId === setId);
     if (entry) { entry.completed = true; renderLog(); }
     addPollLog(auto ? `⚡ AUTO-DQ — ${winnerName} advances` : `✓ DQ — ${winnerName} wins`, 'err');
@@ -958,8 +973,7 @@ async function reportFullScore(setId, idA, idB, nameA, nameB, prefix = "") {
     toast(`🏆 Reported: ${winnerName} wins!`);
     completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
     hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
-    // Remove immediately from stable slot list so card stays blank until next poll clears it
-    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    // Leave _hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
     const entry = matchLog.find(e => e.setId === setId);
     if (entry) { entry.completed = true; renderLog(); }
     fetchManualSets();
@@ -1133,7 +1147,23 @@ function updateVenueDashboardUI(allSets) {
 }
 
 function getStreamScore(set) {
-  const sA = set.slots[0]?.seed?.seedNum, sB = set.slots[1]?.seed?.seedNum;
+  const getSlotSeed = (slot) => {
+    if (slot?.seed?.seedNum) return slot.seed.seedNum;
+    if (slot?.prereqType === 'set' && slot?.prereqId) {
+      const feeder = allFetchedSets.find(s => String(s.id) === String(slot.prereqId)) ||
+        activeSetsData.find(s => String(s.id) === String(slot.prereqId));
+      if (feeder?.slots) {
+        const s0 = feeder.slots[0]?.seed?.seedNum, s1 = feeder.slots[1]?.seed?.seedNum;
+        if (s0 && s1) {
+          const wantsWinner = (slot.prereqPlacement ?? 1) === 1;
+          return wantsWinner ? Math.min(s0, s1) : Math.max(s0, s1);
+        }
+        if (s0) return s0;
+      }
+    }
+    return null;
+  };
+  const sA = getSlotSeed(set.slots[0]), sB = getSlotSeed(set.slots[1]);
   if (!sA || !sB) return 9999;
   return Math.abs(sA - sB) + ((sA + sB) * 0.1);
 }
@@ -1323,7 +1353,7 @@ async function doPoll() {
 
   try {
     const [setData, venueData] = await Promise.all([
-      sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { prereqType prereqId prereqPlacement seed { seedNum } entrant { id name } } } } } }`),
       sggQuery(`query PollVenue { ${eventField} { tournament { id streams { id streamName } stations(page: 1, perPage: 30) { nodes { id number } } } } }`).catch(() => null)
     ]);
 
@@ -1520,25 +1550,49 @@ async function doPoll() {
     }
 
     // AUTO-PROMOTE: If a stream is free and has a queue, promote the head.
-    for (const stream of streamList) {
-      const sid = String(stream.id);
-      if (!occupiedStreamIds.has(sid)) {
-        const queue = streamQueues[sid] || [];
-        if (queue.length > 0) {
-          const nextSetId = queue[0];
-          const nextSet = allSets.find(s => String(s.id) === String(nextSetId));
-          // Only promote if both entrants are filled
-          if (nextSet && nextSet.slots?.[0]?.entrant?.name && nextSet.slots?.[1]?.entrant?.name) {
-            addPollLog(`🎬 Stream ${stream.streamName} is free — auto-promoting next match ${nextSetId}`, 'new');
-            
-            // Mark as occupied IMMEDIATELY so we don't promote another set to the same stream this poll
-            occupiedStreamIds.add(sid);
+    // Gated by the "Autocall next from queue" toggle — when OFF, the TO must
+    // manually click ▶ CALL on each queue head.
+    // Also respects the pgFilter: if a pool filter is active, auto-promote only
+    // calls sets from those phase groups. Sets from other pools stay at the head
+    // of the queue until the TO manually promotes them or clears the filter.
+    const autoQueueCallOn = document.getElementById('autoQueueCallToggle')?.checked !== false;
+    const _pgFilterForPromote = localStorage.getItem('abbey_pg_filter') || '';
+    const _pgAllowedForPromote = _pgFilterForPromote
+      ? _pgFilterForPromote.split(',').map(s => s.trim()).filter(Boolean)
+      : [];
+    if (autoQueueCallOn) {
+      for (const stream of streamList) {
+        const sid = String(stream.id);
+        if (!occupiedStreamIds.has(sid)) {
+          const queue = streamQueues[sid] || [];
+          if (queue.length > 0) {
+            const nextSetId = queue[0];
+            const nextSet = allSets.find(s => String(s.id) === String(nextSetId));
+            // Only promote if both entrants are filled
+            if (nextSet && nextSet.slots?.[0]?.entrant?.name && nextSet.slots?.[1]?.entrant?.name) {
+              // If a pool filter is active, skip sets from non-matching phase groups.
+              // This prevents pool 2 / top-bracket sets from being auto-called while
+              // pool 1 is still running. The TO can still manually ▶ CALL them.
+              if (_pgAllowedForPromote.length > 0) {
+                const setPhaseGroupId = String(nextSet.phaseGroup?.id || '');
+                const inAllowedPool = _pgAllowedForPromote.some(allowed => setPhaseGroupId.includes(allowed));
+                if (!inAllowedPool) {
+                  addPollLog(`⏸ Auto-promote blocked: ${stream.streamName} head (set ${nextSetId}) is outside active pool filter — promote manually`, 'new');
+                  continue;
+                }
+              }
 
-            // Remove from queue first
-            streamQueues[sid].shift();
-            saveStreamQueues();
-            // Call it
-            await callQueuedSetToStream(nextSetId, stream.id, stream.streamName);
+              addPollLog(`🎬 Stream ${stream.streamName} is free — auto-promoting next match ${nextSetId}`, 'new');
+
+              // Mark as occupied IMMEDIATELY so we don't promote another set to the same stream this poll
+              occupiedStreamIds.add(sid);
+
+              // Remove from queue first
+              streamQueues[sid].shift();
+              saveStreamQueues();
+              // Call it
+              await callQueuedSetToStream(nextSetId, stream.id, stream.streamName);
+            }
           }
         }
       }
@@ -1757,7 +1811,7 @@ async function fetchManualSets() {
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   try {
     const [setData, stationData, streamData] = await Promise.all([
-      sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { prereqType prereqId prereqPlacement seed { seedNum } entrant { id name } } } } } }`),
       sggQuery(`query { ${eventField} { tournament { streams { id streamName } stations(page: 1, perPage: 30) { nodes { id number } } } } }`).catch(() => null)
     ]);
     const allSets = setData?.data?.event?.sets?.nodes || [];
@@ -1946,10 +2000,15 @@ document.addEventListener('keydown', e => {
       _scoreKbdTimer = setTimeout(() => { _scoreKbdBuffer = ''; }, 3000);
     }
 
-    // If Enter is pressed and we have both scores
+    // If Enter is pressed — submit if both scores set, or fill opponent 0 if only one set
     else if (e.key === 'Enter') {
       e.preventDefault();
       if (_overlayScoreA !== null && _overlayScoreB !== null && _overlayScoreA !== _overlayScoreB) {
+        submitOverlayScore();
+        _scoreKbdBuffer = '';
+      } else if (_overlayScoreA !== null && _overlayScoreB === null && _overlayScoreA > 0) {
+        // "2 Enter" shortcut: single digit + Enter fills opponent as 0 and submits
+        setScore('B', 0);
         submitOverlayScore();
         _scoreKbdBuffer = '';
       }
@@ -2137,6 +2196,11 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
   }
   saveStreamQueues();
 
+  // If this set was already station-pinged before we queue it, we'll send a
+  // "sorry for the double ping / plans changed" reroute message instead of the
+  // generic queue ping. Capture this BEFORE we mark it announced below.
+  const wasPreviouslyAnnouncedToStation = announcedSetIds.has(String(setId));
+
   // Defensively suppress the station ping pipeline for this set. If the set
   // is already in state 6 when queued (e.g. you queued an already-called set),
   // the external-call detector would otherwise re-announce it on its next poll.
@@ -2157,6 +2221,11 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
   const setObj = allFetchedSets.find(s => String(s.id) === String(setId)) ||
     activeSetsData.find(s => String(s.id) === String(setId)) ||
     pendingSetsData.find(s => String(s.id) === String(setId));
+
+  // Capture the previous station location before the reset clears it.
+  const fromLoc = wasPreviouslyAnnouncedToStation && setObj?.station?.number
+    ? `Station ${setObj.station.number}`
+    : null;
 
   const autoStreamAssign = localStorage.getItem('abbey_auto_stream_assign') !== '0';
   const mainStreamId = localStorage.getItem('abbey_main_stream_id');
@@ -2233,7 +2302,21 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
   if (!set) return;
   const stream = streamList.find(s => String(s.id) === sid);
   if (!stream) return;
-  await sendQueuePingForSet(set, stream);
+
+  if (fromLoc && !queuePingedSetIds.has(String(setId))) {
+    // Set was already pinged to a station — apologize and explain the change.
+    const nA = set.slots[0]?.entrant?.name, nB = set.slots[1]?.entrant?.name;
+    if (nA && nB) {
+      queuePingedSetIds.add(String(setId));
+      const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
+      const ping = buildRerouteToQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText, fromLoc });
+      try { await sendWebhook(ping.content); } catch (e) { }
+      addPollLog(`${ping.shiny ? '✨ SHINY' : '🔄'} Rerouted to queue: ${nA} vs ${nB} → ${stream.streamName}`, 'new');
+      if (ping.shiny) toast('✨ SHINY REROUTE! 1/8192');
+    }
+  } else {
+    await sendQueuePingForSet(set, stream);
+  }
 }
 
 // Wrapped helper so external code paths (the detector) can also send queue pings.
@@ -2250,17 +2333,100 @@ async function sendQueuePingForSet(set, stream) {
   if (ping.shiny) toast('✨ SHINY QUEUE PLACEMENT! 1/8192');
 }
 
-function removeFromStreamQueue(setId, streamId) {
+async function removeFromStreamQueue(setId, streamId) {
   const sid = String(streamId);
   if (!streamQueues[sid]) return;
   streamQueues[sid] = streamQueues[sid].filter(x => String(x) !== String(setId));
-  // Allow a future re-add to ping again
   queuePingedSetIds.delete(String(setId));
-  // Allow station call/ping pipeline to run again if the set is no longer queued.
-  // (We deliberately suppressed it on add via announcedSetIds.add — undo that.)
   announcedSetIds.delete(String(setId));
+  streamAnnouncedSetIds.delete(String(setId));
   saveStreamQueues();
   renderStreamQueue();
+
+  // Must also clear the stream assignment on start.gg. Without this, the
+  // external-stream-assignment detector sees "pending + stream assigned + not
+  // in local queue" and silently re-adds the set on the next poll.
+  const setObj = allFetchedSets.find(s => String(s.id) === String(setId)) ||
+    activeSetsData.find(s => String(s.id) === String(setId)) ||
+    pendingSetsData.find(s => String(s.id) === String(setId));
+
+  if (!setObj || setObj.state === 2 || setObj.state === 6) {
+    // No object found, or set is actively in-progress — don't touch assignments.
+    toast('Removed from queue');
+    return;
+  }
+
+  // Find a free real station (exclude stream-placeholder stations and occupied ones).
+  const placeholderIds = getPlaceholderStationIds();
+  const occupiedStationIds = new Set();
+  for (const s of activeSetsData) {
+    if (s.station?.id && !s.stream?.id) occupiedStationIds.add(String(s.station.id));
+  }
+  const nowMs = Date.now();
+  for (const [locId, ts] of recentlyAssignedLocs.entries()) {
+    if (nowMs - ts < 180000) occupiedStationIds.add(String(locId));
+  }
+  const openStation = stationList
+    .filter(s => !placeholderIds.has(String(s.id)) && !occupiedStationIds.has(String(s.id)))
+    .sort((a, b) => a.number - b.number)[0];
+
+  try {
+    if (openStation) {
+      await sggQuery(`mutation { assignStation(setId: "${setId}", stationId: "${openStation.id}") { id } }`);
+      const prevStationId = setObj.station?.id;
+      setObj.station = openStation;
+      setObj.stream = null;
+      recentlyAssignedLocs.set(String(openStation.id), Date.now());
+      if (prevStationId && String(prevStationId) !== String(openStation.id)) {
+        recentlyAssignedLocs.delete(String(prevStationId));
+      }
+      addPollLog(`📍 Removed from queue → Station ${openStation.number} (${setId})`, 'new');
+      toast(`📍 Removed from queue → Station ${openStation.number}`);
+    } else {
+      // No free station — reassign to the set's current station to clear the stream
+      // on start.gg without changing its station (same technique as pullFromStream).
+      const fallbackStationId = setObj.station?.id;
+      if (fallbackStationId) {
+        await sggQuery(`mutation { assignStation(setId: "${setId}", stationId: "${fallbackStationId}") { id } }`);
+        setObj.stream = null;
+        addPollLog(`📋 Removed from queue — no free station, stream cleared for ${setId}`, 'new');
+        toast('Removed from queue — assign station manually when one frees up');
+      } else {
+        addPollLog(`⚠️ Removed from queue — ${setId} has no station to fall back on`, 'err');
+        toast('Removed from queue (no station available — check start.gg)');
+      }
+    }
+  } catch (e) {
+    toast(`✗ Failed to clear stream: ${e.message}`, true);
+    addPollLog(`⚠️ removeFromQueue API failed for ${setId}: ${e.message}`, 'err');
+  }
+
+  await fetchManualSets();
+}
+
+function clearAllQueues() {
+  const total = Object.values(streamQueues).reduce((n, q) => n + q.length, 0);
+  if (total === 0) { toast('Queues are already empty'); return; }
+  showConfirmModal({
+    title: '🗑 Clear All Queues',
+    message: `This will remove all <strong>${total} queued set${total !== 1 ? 's' : ''}</strong> from every stream queue and wipe the saved queue storage.<br><br>Active stream matches are not affected.`,
+    variant: 'danger',
+    buttons: [
+      {
+        label: 'Yes — clear all queues',
+        variant: 'danger',
+        icon: '🗑',
+        onClick: () => {
+          streamQueues = {};
+          queuePingedSetIds.clear();
+          saveStreamQueues();
+          renderStreamQueue();
+          addPollLog('🗑 All stream queues cleared', 'err');
+          toast('🗑 Queues cleared');
+        },
+      },
+    ],
+  });
 }
 
 function moveInStreamQueue(setId, streamId, dir) {
@@ -2277,25 +2443,32 @@ function moveInStreamQueue(setId, streamId, dir) {
 }
 
 /**
- * Sorts a stream's queue to ensure that sets with "TBD" entrants (unfilled)
- * are always pushed to the bottom. Filled sets maintain their relative order.
+ * Sorts a stream's queue: filled sets first (by their current order),
+ * then TBD/unfilled sets, then sets whose data can't be found at all
+ * ("Match loading…" stubs from stale localStorage entries) at the very bottom.
+ * Returns true if the order actually changed.
  */
 function sortStreamQueue(streamId) {
   const sid = String(streamId);
   const queue = streamQueues[sid] || [];
-  if (!queue.length) return;
+  if (!queue.length) return false;
 
-  const filled = [], unfilled = [];
+  const filled = [], unfilled = [], missing = [];
   for (const setId of queue) {
     const set = allFetchedSets.find(s => String(s.id) === String(setId)) ||
       activeSetsData.find(s => String(s.id) === String(setId)) ||
       pendingSetsData.find(s => String(s.id) === String(setId));
-    const isFilled = !!(set?.slots?.[0]?.entrant?.name && set?.slots?.[1]?.entrant?.name);
-    if (isFilled) filled.push(setId);
+    if (!set) missing.push(setId);
+    else if (set.slots?.[0]?.entrant?.name && set.slots?.[1]?.entrant?.name) filled.push(setId);
     else unfilled.push(setId);
   }
-  streamQueues[sid] = [...filled, ...unfilled];
-  saveStreamQueues();
+  const sorted = [...filled, ...unfilled, ...missing];
+  const changed = sorted.some((id, i) => id !== queue[i]);
+  if (changed) {
+    streamQueues[sid] = sorted;
+    saveStreamQueues();
+  }
+  return changed;
 }
 
 // Strip out finished/missing/already-on-stream sets — runs after every poll.
@@ -2311,12 +2484,15 @@ function cleanStreamQueues() {
       const s = activeSetsData.find(x => String(x.id) === String(setId)) ||
         pendingSetsData.find(x => String(x.id) === String(setId)) ||
         allFetchedSets.find(x => String(x.id) === String(setId));
-      
+
       // If the set isn't in our current fetch, it might be further down in the bracket.
       // We only remove it if we explicitly find it in a completed state.
-      if (!s) return true; 
+      if (!s) return true;
       if (s.state === 3) return false; // completed
       if (s.stream?.id && String(s.stream.id) !== sid) return false; // moved to different stream by external action
+      // If the set is now live on this stream (state 2 or 6), it has been promoted
+      // (externally or otherwise) and should leave the queue — it's now the occupant.
+      if ((s.state === 2 || s.state === 6) && s.stream?.id && String(s.stream.id) === sid) return false;
       return true;
     });
     if (streamQueues[sid].length !== before) {
@@ -2460,6 +2636,36 @@ function toggleAddQueuePanel(streamId) {
 
 // ─── Renderer ───
 
+// Returns { name, projected } for a slot.
+// If the slot has an entrant, uses their name directly.
+// If the slot is unfilled but has a prereqType="set", looks up the feeder set
+// in allFetchedSets and takes the first listed entrant name + "?" as the projection.
+// Falls back to "TBD" when no projection is available.
+function getProjectedSlotName(slot) {
+  if (slot?.entrant?.name) return { name: slot.entrant.name, projected: false };
+  if (slot?.prereqType === 'set' && slot?.prereqId) {
+    const feederSet = allFetchedSets.find(s => String(s.id) === String(slot.prereqId)) ||
+      activeSetsData.find(s => String(s.id) === String(slot.prereqId));
+    if (feederSet) {
+      const fs0 = feederSet.slots?.[0], fs1 = feederSet.slots?.[1];
+      const seed0 = fs0?.seed?.seedNum, seed1 = fs1?.seed?.seedNum;
+      // prereqPlacement 1 = winner advances (pick better seed), 2 = loser advances (pick worse seed)
+      const wantsWinner = (slot.prereqPlacement ?? 1) === 1;
+      let projected = null;
+      if (seed0 && seed1) {
+        projected = wantsWinner
+          ? (seed0 < seed1 ? fs0 : fs1)
+          : (seed0 > seed1 ? fs0 : fs1);
+      } else {
+        projected = fs0; // fallback: no seed data, use slot 0
+      }
+      const name = projected?.entrant?.name;
+      if (name) return { name: name + '?', projected: true };
+    }
+  }
+  return { name: 'TBD', projected: false };
+}
+
 function renderStreamQueue() {
   const el = document.getElementById('streamQueueSlots');
   if (!el) return;
@@ -2468,8 +2674,11 @@ function renderStreamQueue() {
     return;
   }
 
-  // Clean up dead queue entries before rendering
+  // Clean up dead queue entries before rendering, then re-sort every queue so
+  // stale "Match loading…" stubs always sink to the bottom regardless of when
+  // they were added (sort only runs on change, so this is cheap on steady state).
   cleanStreamQueues();
+  for (const sid of Object.keys(streamQueues)) sortStreamQueue(sid);
 
   // Build a Set of all setIds currently queued anywhere — used to filter the candidate pool
   const allQueuedIds = new Set();
@@ -2496,30 +2705,28 @@ function renderStreamQueue() {
     .filter(s => !s.stream?.id)
     .filter(s => !allQueuedIds.has(String(s.id)))
     .filter(inAllowedPool)
-    .sort((a, b) => {
-      // Filled sets first, then by stream score; unfilled sets at the bottom
-      // sorted by phase order (deeper rounds bubble up among unfilled).
-      const aFilled = !!(a.slots?.[0]?.entrant?.name && a.slots?.[1]?.entrant?.name);
-      const bFilled = !!(b.slots?.[0]?.entrant?.name && b.slots?.[1]?.entrant?.name);
-      if (aFilled !== bFilled) return aFilled ? -1 : 1;
-      if (aFilled) return getStreamScore(a) - getStreamScore(b);
-      return (a.phaseGroup?.phase?.phaseOrder ?? 999) - (b.phaseGroup?.phase?.phaseOrder ?? 999);
-    });
+    .sort((a, b) => getStreamScore(a) - getStreamScore(b));
 
   const buildCandidateRow = (set, streamId, streamName) => {
-    const a = set.slots[0]?.entrant?.name || 'TBD';
-    const b = set.slots[1]?.entrant?.name || 'TBD';
-    const filled = a !== 'TBD' && b !== 'TBD';
+    const slotA = getProjectedSlotName(set.slots[0]);
+    const slotB = getProjectedSlotName(set.slots[1]);
+    const a = slotA.name, b = slotB.name;
+    const filled = !!(set.slots[0]?.entrant?.name && set.slots[1]?.entrant?.name);
+    const projected = !filled && (slotA.projected || slotB.projected);
     const sA = set.slots[0]?.seed?.seedNum, sB = set.slots[1]?.seed?.seedNum;
-    const score = filled ? getStreamScore(set) : null;
-    const grade = filled ? streamGrade(score) : '';
+    const score = getStreamScore(set);
+    const grade = streamGrade(score);
     const stateLbl = set.state === 1 ? 'pending' : set.state === 2 ? 'in progress' : 'called';
     const fromLoc = set.station?.number ? `Station ${set.station.number}` : stateLbl;
     const round = set.fullRoundText || '';
+    const nameStyle = filled ? '' : projected
+      ? 'color:var(--text);opacity:0.7;font-style:italic;'
+      : 'color:var(--muted);font-style:italic;';
+    const metaSuffix = filled ? '' : projected ? ' · projected' : ' · awaiting entrants';
     return `<div class="cand-row" onclick="addToStreamQueue('${set.id}', '${streamId}')" title="Add to ${streamName} queue">
       <div class="cand-info">
-        <div class="cand-players" style="${filled ? '' : 'color:var(--muted);font-style:italic;'}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
-        <div class="cand-meta">${round} · ${fromLoc}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}${!filled ? ' · awaiting entrants' : ''}</div>
+        <div class="cand-players" style="${nameStyle}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
+        <div class="cand-meta">${round} · ${fromLoc}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}${metaSuffix}</div>
       </div>
       <div class="cand-grade">${grade || ''}</div>
     </div>`;
@@ -2529,14 +2736,20 @@ function renderStreamQueue() {
     const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
       pendingSetsData.find(s => String(s.id) === String(setId)) ||
       allFetchedSets.find(s => String(s.id) === String(setId));
-    if (!set) return '';
-    const a = set.slots[0]?.entrant?.name || 'TBD';
-    const b = set.slots[1]?.entrant?.name || 'TBD';
-    const filled = a !== 'TBD' && b !== 'TBD';
+    if (!set) return ''; // not in current fetch — sorted to bottom, hidden until resolved
+    const slotA = getProjectedSlotName(set.slots[0]);
+    const slotB = getProjectedSlotName(set.slots[1]);
+    const a = slotA.name, b = slotB.name;
+    const filled = !!(set.slots[0]?.entrant?.name && set.slots[1]?.entrant?.name);
+    const projected = !filled && (slotA.projected || slotB.projected);
     const round = set.fullRoundText || '';
     const stateLbl = set.state === 1 ? 'pending' : set.state === 2 ? 'in progress' : 'called';
     const fromLoc = set.station?.number ? `Station ${set.station.number}` : stateLbl;
     const isHead = idx === 0;
+    const nameStyle = filled ? '' : projected
+      ? 'color:var(--text);opacity:0.7;font-style:italic;'
+      : 'color:var(--muted);font-style:italic;';
+    const metaSuffix = filled ? '' : projected ? ' · projected' : ' · awaiting entrants';
     let sendBtn = '';
     if (isHead && !streamIsLive && filled) {
       sendBtn = `<button class="qi-btn send" onclick="event.stopPropagation();promoteFromQueue('${streamId}')" title="Call to stream now">▶ CALL</button>`;
@@ -2548,8 +2761,8 @@ function renderStreamQueue() {
     return `<div class="queue-item ${isHead ? 'head' : ''}">
       <div class="qi-pos">${idx + 1}</div>
       <div class="qi-info">
-        <div class="qi-players" style="${filled ? '' : 'color:var(--muted);font-style:italic;'}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
-        <div class="qi-meta">${round} · ${fromLoc}${!filled ? ' · awaiting entrants' : ''}</div>
+        <div class="qi-players" style="${nameStyle}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
+        <div class="qi-meta">${round} · ${fromLoc}${metaSuffix}</div>
       </div>
       <div class="qi-controls">
         ${sendBtn}
@@ -2626,8 +2839,8 @@ function renderStreamQueue() {
         <span>Up Next Queue</span>
         <span class="ssl-count">${queue.length} queued</span>
       </div>
-      ${queueHtml}
       ${addSection}
+      ${queueHtml}
     </div>`;
   }).join('');
 }
@@ -2647,11 +2860,16 @@ function renderPlayerHub() {
   const actionSets = activeSetsData.filter(s => s.state === 2 || s.state === 6);
   const currentIds = actionSets.map(s => String(s.id));
   currentIds.forEach(id => { if (!_hubSlotIds.includes(id)) _hubSlotIds.push(id); });
+  // Snapshot slots for THIS render (stale IDs show as dashed placeholders this cycle),
+  // then prune _hubSlotIds to only active IDs so NEXT render is clean.
+  // This prevents cards shifting the moment a score is submitted — the gap closes only
+  // after the next full data refresh confirms the set is truly gone.
+  const renderSlotIds = [..._hubSlotIds];
   _hubSlotIds = _hubSlotIds.filter(id => currentIds.includes(id));
 
   const CARD_H = '200px';
 
-  const cards = _hubSlotIds.map(slotId => {
+  const cards = renderSlotIds.map(slotId => {
     const set = actionSets.find(s => String(s.id) === slotId);
 
     if (!set) return `<div style="height:${CARD_H};background:var(--bg);border:1px dashed var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;">
@@ -2895,7 +3113,7 @@ async function submitOverlayScore() {
     completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
     streamAnnouncedSetIds.delete(String(setId));
     hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
-    _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+    // Leave _hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
     const entry = matchLog.find(e => e.setId === setId);
     if (entry) { entry.completed = true; renderLog(); }
 
@@ -2903,7 +3121,9 @@ async function submitOverlayScore() {
     // We do this BEFORE fetchManualSets so the stream goes from
     // "live: just-reported set" to "live: next queued set" without a
     // visible empty state in between.
-    if (reportedStreamId) {
+    // Gated by the "Autocall next from queue" toggle.
+    const autoQueueCallOnAfterScore = document.getElementById('autoQueueCallToggle')?.checked !== false;
+    if (reportedStreamId && autoQueueCallOnAfterScore) {
       const nextSetId = (streamQueues[reportedStreamId] || [])[0];
       if (nextSetId) {
         const stream = streamList.find(s => String(s.id) === reportedStreamId);
@@ -2941,7 +3161,7 @@ async function submitOverlayScore() {
 Object.assign(window, {
   addToStreamQueue, browseEvents, callQueuedSetToStream, callSetFromPanel,
   clearPhaseFilter, closeConfirmModal, closeScoreOverlay, copyPollLog,
-  fetchAndPopulateStreams, fetchManualSets, hubToggleWatch,
+  clearAllQueues, fetchAndPopulateStreams, fetchManualSets, hubToggleWatch,
   loadPhaseGroups, manualLink, markInProgressQuick, moveInStreamQueue,
   openScoreOverlay, promoteFromQueue, pullFromStream, removeFromStreamQueue,
   renderManualSets, requestDQ, requestHubDQ, requestMoveToStream, resetMatch,
