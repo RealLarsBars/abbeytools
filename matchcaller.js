@@ -1353,7 +1353,7 @@ async function doPoll() {
 
   try {
     const [setData, venueData] = await Promise.all([
-      sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { prereqType prereqId prereqPlacement seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query PollSets { ${eventField} { sets(page: 1, perPage: 100, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { prereqType prereqId prereqPlacement seed { seedNum } entrant { id name } } } } } }`),
       sggQuery(`query PollVenue { ${eventField} { tournament { id streams { id streamName } stations(page: 1, perPage: 30) { nodes { id number } } } } }`).catch(() => null)
     ]);
 
@@ -1378,6 +1378,12 @@ async function doPoll() {
     allFetchedSets = allSets;
     activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
     pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
+
+    // Prune hub slots once per poll cycle — after fresh data confirms which sets
+    // are truly gone. Doing this here (not in renderPlayerHub) means any number
+    // of renders between polls all show dashed placeholders rather than shifting.
+    { const pollActiveIds = new Set(activeSetsData.map(s => String(s.id)));
+      _hubSlotIds = _hubSlotIds.filter(id => pollActiveIds.has(id)); }
 
     const autoOn = document.getElementById('autoAssignToggle')?.checked;
     const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
@@ -1811,7 +1817,7 @@ async function fetchManualSets() {
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   try {
     const [setData, stationData, streamData] = await Promise.all([
-      sggQuery(`query { ${eventField} { sets(page: 1, perPage: 50, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { prereqType prereqId prereqPlacement seed { seedNum } entrant { id name } } } } } }`),
+      sggQuery(`query { ${eventField} { sets(page: 1, perPage: 100, filters: { state: [1,2,6] }) { nodes { id state fullRoundText createdAt updatedAt phaseGroup { id phase { id phaseOrder } } station { id number } stream { id streamName } slots { prereqType prereqId prereqPlacement seed { seedNum } entrant { id name } } } } } }`),
       sggQuery(`query { ${eventField} { tournament { streams { id streamName } stations(page: 1, perPage: 30) { nodes { id number } } } } }`).catch(() => null)
     ]);
     const allSets = setData?.data?.event?.sets?.nodes || [];
@@ -2443,9 +2449,8 @@ function moveInStreamQueue(setId, streamId, dir) {
 }
 
 /**
- * Sorts a stream's queue: filled sets first (by their current order),
- * then TBD/unfilled sets, then sets whose data can't be found at all
- * ("Match loading…" stubs from stale localStorage entries) at the very bottom.
+ * Sorts a stream's queue: filled sets first, then projected (at least one
+ * slot resolvable via prereq), then pure TBD, then stale stubs at bottom.
  * Returns true if the order actually changed.
  */
 function sortStreamQueue(streamId) {
@@ -2453,16 +2458,19 @@ function sortStreamQueue(streamId) {
   const queue = streamQueues[sid] || [];
   if (!queue.length) return false;
 
-  const filled = [], unfilled = [], missing = [];
+  const filled = [], projected = [], tbd = [], missing = [];
   for (const setId of queue) {
     const set = allFetchedSets.find(s => String(s.id) === String(setId)) ||
       activeSetsData.find(s => String(s.id) === String(setId)) ||
       pendingSetsData.find(s => String(s.id) === String(setId));
-    if (!set) missing.push(setId);
-    else if (set.slots?.[0]?.entrant?.name && set.slots?.[1]?.entrant?.name) filled.push(setId);
-    else unfilled.push(setId);
+    if (!set) { missing.push(setId); continue; }
+    if (set.slots?.[0]?.entrant?.name && set.slots?.[1]?.entrant?.name) { filled.push(setId); continue; }
+    const slotA = getProjectedSlotName(set.slots?.[0]);
+    const slotB = getProjectedSlotName(set.slots?.[1]);
+    if (slotA.projected || slotB.projected) projected.push(setId);
+    else tbd.push(setId);
   }
-  const sorted = [...filled, ...unfilled, ...missing];
+  const sorted = [...filled, ...projected, ...tbd, ...missing];
   const changed = sorted.some((id, i) => id !== queue[i]);
   if (changed) {
     streamQueues[sid] = sorted;
@@ -2705,6 +2713,12 @@ function renderStreamQueue() {
     .filter(s => !s.stream?.id)
     .filter(s => !allQueuedIds.has(String(s.id)))
     .filter(inAllowedPool)
+    .filter(s => {
+      // Hide sets where neither slot has an entrant or a resolvable projection
+      if (s.slots?.[0]?.entrant?.name || s.slots?.[1]?.entrant?.name) return true;
+      const sA = getProjectedSlotName(s.slots?.[0]), sB = getProjectedSlotName(s.slots?.[1]);
+      return sA.projected || sB.projected;
+    })
     .sort((a, b) => getStreamScore(a) - getStreamScore(b));
 
   const buildCandidateRow = (set, streamId, streamName) => {
@@ -2819,9 +2833,26 @@ function renderStreamQueue() {
     }
 
     // ─ QUEUE section ─
-    const queueHtml = queue.length
-      ? queue.map((id, i) => buildQueueItem(id, sid, i, queue.length, !!occupant)).join('')
-      : `<div class="empty-queue-msg">Queue is empty — add matches below.</div>`;
+    // Hide pure TBD-vs-TBD entries from the visible queue; they're still tracked
+    // in the queue data and surface automatically once entrants are determined.
+    const visibleQueue = queue.filter(id => {
+      const s = allFetchedSets.find(x => String(x.id) === id) ||
+        activeSetsData.find(x => String(x.id) === id) ||
+        pendingSetsData.find(x => String(x.id) === id);
+      if (!s) return true; // keep stubs ("Match loading…")
+      if (s.slots?.[0]?.entrant?.name || s.slots?.[1]?.entrant?.name) return true;
+      const sA = getProjectedSlotName(s.slots?.[0]), sB = getProjectedSlotName(s.slots?.[1]);
+      return sA.projected || sB.projected;
+    });
+    const hiddenTbd = queue.length - visibleQueue.length;
+    const tbdNote = hiddenTbd
+      ? `<div style="font-size:0.72rem;color:var(--muted);padding:5px 4px 0;">+${hiddenTbd} TBD match${hiddenTbd !== 1 ? 'es' : ''} hidden (no entrants or projection yet)</div>`
+      : '';
+    const queueHtml = visibleQueue.length
+      ? visibleQueue.map((id, i) => buildQueueItem(id, sid, i, visibleQueue.length, !!occupant)).join('') + tbdNote
+      : (hiddenTbd
+        ? `<div class="empty-queue-msg">Queue is empty — add matches below.</div>${tbdNote}`
+        : `<div class="empty-queue-msg">Queue is empty — add matches below.</div>`);
 
     // ─ ADD-TO-QUEUE section (collapsible) ─
     const isExpanded = _expandedAddQueues.has(sid);
@@ -2860,16 +2891,13 @@ function renderPlayerHub() {
   const actionSets = activeSetsData.filter(s => s.state === 2 || s.state === 6);
   const currentIds = actionSets.map(s => String(s.id));
   currentIds.forEach(id => { if (!_hubSlotIds.includes(id)) _hubSlotIds.push(id); });
-  // Snapshot slots for THIS render (stale IDs show as dashed placeholders this cycle),
-  // then prune _hubSlotIds to only active IDs so NEXT render is clean.
-  // This prevents cards shifting the moment a score is submitted — the gap closes only
-  // after the next full data refresh confirms the set is truly gone.
-  const renderSlotIds = [..._hubSlotIds];
-  _hubSlotIds = _hubSlotIds.filter(id => currentIds.includes(id));
+  // Never prune here — pruning happens once per poll cycle in doPoll so stale
+  // slots hold their position as dashed placeholders across ALL renders that
+  // fire between polls (e.g. score submit + auto-promote both call fetchManualSets).
 
   const CARD_H = '200px';
 
-  const cards = renderSlotIds.map(slotId => {
+  const cards = _hubSlotIds.map(slotId => {
     const set = actionSets.find(s => String(s.id) === slotId);
 
     if (!set) return `<div style="height:${CARD_H};background:var(--bg);border:1px dashed var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;">
