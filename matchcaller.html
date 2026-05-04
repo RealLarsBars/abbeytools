@@ -1543,6 +1543,11 @@
       background: rgba(114, 137, 218, 0.06);
     }
 
+    /* Stream queue match readiness colors — come after .head so they override border-color */
+    .queue-item.ready, .cand-row.ready { border-color: rgba(0, 229, 160, 0.55); background: rgba(0, 229, 160, 0.04); }
+    .queue-item.proj,  .cand-row.proj  { border-color: rgba(220, 185, 0, 0.5);  background: rgba(220, 185, 0, 0.04); }
+    .queue-item.tbd,   .cand-row.tbd   { border-color: rgba(255, 79, 109, 0.45); background: rgba(255, 79, 109, 0.04); }
+
     .queue-item .qi-pos {
       flex-shrink: 0;
       font-family: 'Space Mono', monospace;
@@ -1733,6 +1738,7 @@
             spellcheck="false" data-lpignore="true" data-form-type="other" style="-webkit-text-security:disc;">
           <button class="btn-sm" onclick="saveSettings()">Save</button>
         </div>
+        <div class="hint">Your Discord server's incoming webhook URL &#x2014; all match call pings and player notifications go here.</div>
       </div>
       <hr class="section-sep">
       <div class="field">
@@ -1740,6 +1746,7 @@
         <input type="text" id="sggToken" placeholder="Bearer token from start.gg developer settings" autocomplete="off"
           spellcheck="false" data-lpignore="true" data-form-type="other" onblur="saveSettings()"
           style="-webkit-text-security:disc;">
+        <div class="hint">Bearer token from your start.gg developer settings &#x2014; gives access to your tournament data and scoring.</div>
       </div>
       <div class="field">
         <label>Tournament Slug</label>
@@ -1805,7 +1812,83 @@
           the stream and dedicated station on start.gg.</div>
       </div>
 
+      <hr class="section-sep">
+
+      <div class="field">
+        <div class="toggle-row">
+          <div style="flex:1;">
+            <span class="toggle-label" style="font-weight:600;">&#x26A1; Auto-Call Pending Sets</span>
+            <div class="hint" style="margin-top:4px;">When ON, automatically calls pending sets to free stations in phase order, starting with the lowest active phase. Streams are always filled manually via the Stream Queue.</div>
+          </div>
+          <label class="toggle" style="transform:scale(1.2);margin-left:14px;flex-shrink:0;">
+            <input type="checkbox" id="autoAssignToggle" onchange="saveSettings()">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label style="font-weight:600;">Poll Interval</label>
+        <div class="hint" style="margin-top:0;margin-bottom:6px;">How often the Auto Watch engine checks start.gg for new or updated sets.</div>
+        <select id="pollInterval" onchange="saveSettings()">
+          <option value="15000">Every 15 seconds</option>
+          <option value="20000">Every 20 seconds</option>
+          <option value="30000">Every 30 seconds</option>
+          <option value="45000">Every 45 seconds</option>
+          <option value="60000" selected>Every 60 seconds</option>
+        </select>
+      </div>
+
+      <hr class="section-sep">
+
+      <div class="field">
+        <div class="toggle-row">
+          <div style="flex:1;">
+            <span class="toggle-label" style="font-weight:600;">Enable Automatic DQs</span>
+            <div class="hint" style="margin-top:4px;">When ON, players who miss the DQ timer are automatically DQ'd on start.gg. When OFF, expired sets show manual DQ/Start buttons in the Player Hub.</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="autoDqToggle" onchange="saveSettings()" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:10px;">
+        <label style="font-weight:600;">DQ Timer Duration (Minutes)</label>
+        <div class="hint" style="margin-top:0;margin-bottom:6px;">Minutes after a set is called before the DQ system triggers. 5.5 is standard.</div>
+        <input type="number" id="dqTimerInput" step="0.5" min="1" value="5.5" onblur="saveSettings()"
+          style="width:120px;">
+      </div>
+
+      <hr class="section-sep">
+
+      <div class="field">
+        <label>Phase Stream Tiers <span style="color:var(--muted);font-size:0.7rem;">&#x2014; set per phase how matches are routed to streams</span></label>
+        <div class="hint" style="margin-bottom:6px;">Load phases first. <strong style="color:var(--blue);">Top 8</strong> = Winners sets go to main stream only. <strong style="color:#a78bfa;">Top 24</strong> = Winners to main stream, Losers to any stream.</div>
+        <div id="streamPriorityPhases" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+
+      <div class="field" style="margin-top:10px;">
+        <label>Priority Stream <span style="color:var(--muted);font-size:0.7rem;">&#x2014; stream-only phases will ONLY go to this stream</span></label>
+        <div class="hint" style="margin-bottom:6px;">When stream-tier phases are active, Winners-bracket matches only queue for this stream &#x2014; never the sidestream.</div>
+        <div class="row" style="margin-bottom:0;">
+          <select id="priorityStreamId" onchange="savePriorityStream()">
+            <option value="">Any available stream</option>
+          </select>
+          <button class="btn-sm" onclick="fetchAndPopulateStreams()" style="white-space:nowrap;">&#x21BB;
+            Load</button>
+        </div>
+      </div>
+
       <div id="settingsStatus" style="margin-top:10px;"></div>
+    </div>
+    <div class="card" style="margin-top:14px;">
+      <div class="card-title">&#x1F517; Discord Linked Accounts</div>
+      <div class="hint" style="margin-bottom:12px;">Players from your attendee CSV with a Discord ID. Linked players get @mentioned in match pings. Unlinked players are pinged by name only.</div>
+      <div id="discordLinkedList">
+        <span style="font-size:0.82rem;color:var(--muted);">Load an attendee CSV above to see linked accounts.</span>
+      </div>
     </div>
   </div>
 
@@ -1846,25 +1929,6 @@
   </div>
 
   <div class="tab-panel" id="tab-auto">
-    <div class="card" style="border:2px solid var(--accent);background:rgba(0,229,160,0.03);">
-      <div class="toggle-row">
-        <div style="flex:1;">
-          <span class="toggle-label"
-            style="display:flex;align-items:center;gap:8px;font-size:1.1rem;color:var(--accent);">
-            &#x26A1; <strong>Auto-Call Pending Sets</strong>
-          </span>
-          <div class="hint" style="margin-top:6px;font-size:0.8rem;">
-            Strict Progression: only calls the earliest active phase. Streams go to competitive matches, stations to
-            oldest waiting matches.
-          </div>
-        </div>
-        <label class="toggle" style="transform:scale(1.3);margin-right:10px;">
-          <input type="checkbox" id="autoAssignToggle" onchange="saveSettings()">
-          <span class="slider"></span>
-        </label>
-      </div>
-    </div>
-
     <div class="grid2">
       <div class="card">
         <div class="card-title">Auto Watch Status</div>
@@ -1892,17 +1956,6 @@
         </div>
 
         <div class="field">
-          <label>Poll Interval</label>
-          <select id="pollInterval">
-            <option value="15000">Every 15 seconds</option>
-            <option value="20000">Every 20 seconds</option>
-            <option value="30000">Every 30 seconds</option>
-            <option value="45000">Every 45 seconds</option>
-            <option value="60000" selected>Every 60 seconds</option>
-          </select>
-        </div>
-
-        <div class="field">
           <label>Phase Group Filter <span style="color:var(--muted);font-size:0.7rem;">&#x2014; check pools to call
               &middot; leave all unchecked = call everything</span></label>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
@@ -1916,46 +1969,6 @@
           </div>
           <div id="phaseGroupCheckboxes" style="display:flex;flex-direction:column;gap:6px;"></div>
         </div>
-        <div class="field" style="margin-top:10px;">
-          <label>Phase Stream Tiers <span style="color:var(--muted);font-size:0.7rem;">&#x2014; set per phase how
-              matches are routed to streams</span></label>
-          <div id="streamPriorityPhases" style="display:flex;flex-direction:column;gap:6px;"></div>
-          <div class="hint" style="margin-top:4px;">Load phases first, then select which bracket phases should be
-            stream-only.</div>
-        </div>
-        <div class="field" style="margin-top:10px;">
-          <label>Priority Stream <span style="color:var(--muted);font-size:0.7rem;">&#x2014; stream-only phases will
-              ONLY go to this stream</span></label>
-          <div class="row" style="margin-bottom:0;">
-            <select id="priorityStreamId" onchange="savePriorityStream()">
-              <option value="">Any available stream</option>
-            </select>
-            <button class="btn-sm" onclick="fetchAndPopulateStreams()" style="white-space:nowrap;">&#x21BB;
-              Load</button>
-          </div>
-        </div>
-
-        <hr class="section-sep">
-
-        <div class="field">
-          <div class="toggle-row">
-            <span class="toggle-label" style="font-weight:600;">Enable Automatic DQs</span>
-            <label class="toggle">
-              <input type="checkbox" id="autoDqToggle" onchange="saveSettings()" checked>
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="hint" style="margin-top:6px;">If disabled, expired sets show manual DQ/Start buttons in the Hub.
-          </div>
-        </div>
-
-        <div class="field" style="margin-top:12px;">
-          <label style="font-weight:600;">DQ Timer Duration (Minutes)</label>
-          <input type="number" id="dqTimerInput" step="0.5" min="1" value="5.5" onblur="saveSettings()"
-            style="width:120px;">
-          <div class="hint" style="margin-top:6px;">Time before a called set triggers a DQ or prompts for action.</div>
-        </div>
-
         <hr class="section-sep">
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -1991,14 +2004,13 @@
       <button class="btn-sm" id="streamWatchBtn"
         style="padding:12px 18px;font-size:1rem;background:var(--accent);color:#0d0f12;border-color:var(--accent);"
         onclick="hubToggleWatch()">&#x25B6; Start Watching</button>
+      <button class="btn-sm" style="padding:12px 18px;font-size:1rem;border-color:var(--accent2);color:var(--accent2);white-space:nowrap;" onclick="clearAllQueues()">&#x1F5D1; Clear Queues</button>
     </div>
 
-    <div
-      style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:10px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:10px;">
       <div>
         <strong style="font-size:0.85rem;">Autocall next from queue</strong>
-        <div class="hint" style="margin-top:2px;">When ON, automatically promotes the next queue item the moment the
-          stream becomes free. Turn OFF for manual-only ▶ CALL control.</div>
+        <div class="hint" style="margin-top:2px;">When ON, automatically promotes the next queue item the moment the stream becomes free. Turn OFF for manual-only ▶ CALL control.</div>
       </div>
       <label class="toggle" style="transform:scale(1.2);margin-left:14px;flex-shrink:0;">
         <input type="checkbox" id="autoQueueCallToggle" onchange="saveSettings()" checked>
@@ -2128,8 +2140,8 @@
     </div>
   </div>
 
-  <script src="/wp-content/uploads/matchcaller.js?v=305"></script>
-  <script src="/wp-content/uploads/csv-handler.js?v=305"></script>
+  <script src="/wp-content/uploads/matchcaller.js?v=20260501"></script>
+  <script src="/wp-content/uploads/csv-handler.js?v=20260501"></script>
 </body>
 
 </html>
