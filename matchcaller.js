@@ -22,6 +22,8 @@ let DQ_MINUTES = 5.5;
 let streamQueues = {};
 // Tracks which streams have their "+ Add to queue" panel expanded
 let _expandedAddQueues = new Set();
+// Tracks when each stream first became empty (no active occupant). Shape: { [streamId]: timestamp }
+const streamEmptySince = {};
 
 function loadStreamQueues() {
   try {
@@ -2674,6 +2676,15 @@ function getProjectedSlotName(slot) {
   return { name: 'TBD', projected: false };
 }
 
+function formatElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), rem = s % 60;
+  if (m < 60) return `${m}m ${rem}s`;
+  const h = Math.floor(m / 60), remM = m % 60;
+  return `${h}h ${remM}m`;
+}
+
 function renderStreamQueue() {
   const el = document.getElementById('streamQueueSlots');
   if (!el) return;
@@ -2737,7 +2748,8 @@ function renderStreamQueue() {
       ? 'color:var(--text);opacity:0.7;font-style:italic;'
       : 'color:var(--muted);font-style:italic;';
     const metaSuffix = filled ? '' : projected ? ' · projected' : ' · awaiting entrants';
-    return `<div class="cand-row" onclick="addToStreamQueue('${set.id}', '${streamId}')" title="Add to ${streamName} queue">
+    const readinessClass = filled ? 'ready' : projected ? 'proj' : 'tbd';
+    return `<div class="cand-row ${readinessClass}" onclick="addToStreamQueue('${set.id}', '${streamId}')" title="Add to ${streamName} queue">
       <div class="cand-info">
         <div class="cand-players" style="${nameStyle}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
         <div class="cand-meta">${round} · ${fromLoc}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}${metaSuffix}</div>
@@ -2772,7 +2784,8 @@ function renderStreamQueue() {
     } else if (isHead && !filled) {
       sendBtn = `<button class="qi-btn send" disabled title="Players not filled in yet">▶ CALL</button>`;
     }
-    return `<div class="queue-item ${isHead ? 'head' : ''}">
+    const readinessClass = filled ? 'ready' : projected ? 'proj' : 'tbd';
+    return `<div class="queue-item ${isHead ? 'head ' : ''}${readinessClass}">
       <div class="qi-pos">${idx + 1}</div>
       <div class="qi-info">
         <div class="qi-players" style="${nameStyle}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
@@ -2794,6 +2807,13 @@ function renderStreamQueue() {
     const escName = String(stream.streamName).replace(/'/g, "\\'");
 
     // ─ LIVE NOW section ─
+    // Track how long this stream has been without an active match
+    if (occupant) {
+      delete streamEmptySince[sid];
+    } else if (!streamEmptySince[sid]) {
+      streamEmptySince[sid] = Date.now();
+    }
+
     let liveSection;
     if (occupant) {
       const a = occupant.slots[0]?.entrant?.name || '?';
@@ -2823,10 +2843,12 @@ function renderStreamQueue() {
         </div>
       </div>`;
     } else {
+      const emptySince = streamEmptySince[sid];
+      const emptyDuration = emptySince ? formatElapsed(Date.now() - emptySince) : null;
       liveSection = `<div class="stream-slot empty">
         <div class="ss-head">
           <div class="ss-name">🎥 ${stream.streamName}</div>
-          <div class="ss-status">EMPTY</div>
+          <div class="ss-status">EMPTY${emptyDuration ? ` · ${emptyDuration}` : ''}</div>
         </div>
         <div class="ss-match-meta" style="margin-top:6px;">No match currently on stream${queue.length ? ' — click ▶ CALL on the head of the queue to promote.' : '.'}</div>
       </div>`;
@@ -3176,6 +3198,82 @@ async function submitOverlayScore() {
   } catch (e) { toast(`✗ ${e.message}`, true); }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Discord Linked Accounts panel
+// ─────────────────────────────────────────────────────────────
+function renderDiscordAccountsList() {
+  const el = document.getElementById('discordLinkedList');
+  if (!el) return;
+  if (!players.length) {
+    el.innerHTML = '<span style="font-size:0.82rem;color:var(--muted);">Load an attendee CSV above to see linked accounts.</span>';
+    return;
+  }
+  const linked = players.filter(p => p.discordId);
+  const unlinked = players.filter(p => !p.discordId);
+  let html = '';
+
+  if (linked.length) {
+    html += `<div style="margin-bottom:8px;font-size:0.68rem;font-family:'Space Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:var(--accent);">${linked.length} linked</div>`;
+    linked.forEach(p => {
+      const pi = players.indexOf(p);
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(0,229,160,0.05);border:1px solid rgba(0,229,160,0.2);border-radius:7px;margin-bottom:4px;">
+        <span style="flex:1;font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.tag.replace(/</g,'&lt;')}</span>
+        <span style="font-family:'Space Mono',monospace;font-size:0.68rem;color:var(--muted);flex-shrink:0;">${p.discordId}</span>
+        <button class="btn-sm" style="padding:3px 8px;font-size:0.65rem;border-color:var(--accent2);color:var(--accent2);flex-shrink:0;" onclick="unlinkPlayer(${pi})">Unlink</button>
+      </div>`;
+    });
+  }
+
+  if (unlinked.length) {
+    html += `<details style="margin-top:${linked.length ? '12' : '0'}px;">
+      <summary style="font-size:0.72rem;font-family:'Space Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:var(--muted);cursor:pointer;margin-bottom:8px;user-select:none;">${unlinked.length} not linked &#x2014; expand to link manually</summary>`;
+    unlinked.forEach(p => {
+      const pi = players.indexOf(p);
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:7px;margin-bottom:4px;">
+        <span style="flex:1;font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.tag.replace(/</g,'&lt;')}</span>
+        <input id="ml-p${pi}" type="text" placeholder="Discord User ID" style="width:140px;font-size:0.72rem;padding:4px 8px;flex-shrink:0;" autocomplete="off">
+        <button class="btn-sm" style="padding:3px 8px;font-size:0.65rem;flex-shrink:0;" onclick="manualLinkPlayer(${pi})">Link</button>
+      </div>`;
+    });
+    html += '</details>';
+  }
+
+  if (!linked.length && !unlinked.length) {
+    html = '<span style="font-size:0.82rem;color:var(--muted);">No players in CSV.</span>';
+  }
+
+  el.innerHTML = html;
+}
+
+function manualLinkPlayer(playerIdx) {
+  const p = players[playerIdx];
+  if (!p) return;
+  const input = document.getElementById('ml-p' + playerIdx);
+  const id = input?.value.trim().replace(/\D/g, '');
+  if (!id) { toast('Paste a numeric Discord user ID', true); return; }
+  discordOverrides[p.tag.toLowerCase()] = id;
+  saveOverrides();
+  try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); m[p.tag.toLowerCase()] = id; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { }
+  const player = tagMap.get(p.tag.toLowerCase());
+  if (player) player.discordId = id;
+  p.discordId = id;
+  renderDiscordAccountsList();
+  toast(`✓ Linked ${p.tag}`);
+}
+
+function unlinkPlayer(playerIdx) {
+  const p = players[playerIdx];
+  if (!p) return;
+  delete discordOverrides[p.tag.toLowerCase()];
+  saveOverrides();
+  try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); delete m[p.tag.toLowerCase()]; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { }
+  const player = tagMap.get(p.tag.toLowerCase());
+  if (player) player.discordId = '';
+  p.discordId = '';
+  renderDiscordAccountsList();
+  toast(`Unlinked ${p.tag}`);
+}
+
 // --- WordPress compatibility shim ---
 // Some WP optimization plugins (WP Rocket, Autoptimize, LiteSpeed, SiteGround Optimizer,
 // etc.) wrap inline scripts in IIFEs or load them as modules, which scopes our top-level
@@ -3190,11 +3288,12 @@ Object.assign(window, {
   addToStreamQueue, browseEvents, callQueuedSetToStream, callSetFromPanel,
   clearPhaseFilter, closeConfirmModal, closeScoreOverlay, copyPollLog,
   clearAllQueues, fetchAndPopulateStreams, fetchManualSets, hubToggleWatch,
-  loadPhaseGroups, manualLink, markInProgressQuick, moveInStreamQueue,
+  loadPhaseGroups, manualLink, manualLinkPlayer, markInProgressQuick, moveInStreamQueue,
   openScoreOverlay, promoteFromQueue, pullFromStream, removeFromStreamQueue,
-  renderManualSets, requestDQ, requestHubDQ, requestMoveToStream, resetMatch,
-  savePriorityStream, saveSettings, setScore, startPolling, stopPolling,
-  submitOverlayScore, switchTab, toggleAddQueuePanel, toggleHubCheckin, toggleSetup
+  renderDiscordAccountsList, renderManualSets, requestDQ, requestHubDQ,
+  requestMoveToStream, resetMatch, savePriorityStream, saveSettings, setScore,
+  startPolling, stopPolling, submitOverlayScore, switchTab, toggleAddQueuePanel,
+  toggleHubCheckin, toggleSetup, unlinkPlayer
 });
 
 // (initDropZone moved to csv-handler.js)

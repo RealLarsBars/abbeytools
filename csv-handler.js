@@ -89,6 +89,7 @@ function loadCSV(file) {
       for (const p of players) { if (p.discordId) discordMap[p.tag.toLowerCase()] = p.discordId; }
       localStorage.setItem('abbey_discord_map', JSON.stringify(discordMap));
       renderCsvStatus();
+      if (typeof renderDiscordAccountsList === 'function') renderDiscordAccountsList();
       toast('✓ Attendee list loaded');
     }
   });
