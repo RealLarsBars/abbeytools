@@ -1,15 +1,18 @@
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Space+Mono:wght@400;700&display=swap');
 
     :root {
-      --bg: #0d0f12;
-      --surface: #151820;
-      --border: #252b38;
-      --accent: #00e5a0;
-      --accent2: #ff4f6d;
-      --blue: #7289da;
-      --text: #e2e8f0;
-      --muted: #5a6580;
-      --called: #1a2a22;
+      --bg: #0b0c10;
+      --surface: rgba(21, 24, 32, 0.45);
+      --border: rgba(255, 255, 255, 0.08);
+      --accent: #00f0ff;
+      --accent-glow: rgba(0, 240, 255, 0.4);
+      --accent2: #ff2a5f;
+      --accent2-glow: rgba(255, 42, 95, 0.4);
+      --blue: #8a2be2;
+      --text: #f0f4f8;
+      --muted: #8b949e;
+      --called: rgba(0, 240, 255, 0.1);
+      --backdrop-blur: blur(16px);
     }
 
     * {
@@ -20,6 +23,7 @@
 
     body {
       background: var(--bg);
+      background-image: radial-gradient(circle at top right, #1f1437, transparent 60%), radial-gradient(circle at bottom left, #0b1a2e, transparent 50%);
       color: var(--text);
       font-family: 'Inter', sans-serif;
       min-height: 100vh;
@@ -105,10 +109,18 @@
 
     .card {
       background: var(--surface);
+      backdrop-filter: var(--backdrop-blur);
+      -webkit-backdrop-filter: var(--backdrop-blur);
       border: 1px solid var(--border);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
       border-radius: 14px;
       padding: 20px;
       height: 100%;
+      transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s;
+    }
+
+    .card:hover {
+      box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
     }
 
     .card-title {
@@ -138,10 +150,17 @@
     }
 
     .v-col {
-      background: var(--bg);
+      background: rgba(11, 12, 16, 0.4);
+      backdrop-filter: var(--backdrop-blur);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 12px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .v-col:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     }
 
     .v-col h4 {
@@ -315,21 +334,29 @@
     }
 
     .btn-primary {
-      background: var(--accent);
+      background: linear-gradient(135deg, #00f0ff 0%, #00a2ff 100%);
       color: #0d0f12;
+      box-shadow: 0 4px 14px var(--accent-glow);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     .btn-primary:not(:disabled):hover {
-      opacity: 0.88;
+      box-shadow: 0 6px 20px var(--accent-glow);
+      transform: translateY(-1px);
+      opacity: 1;
     }
 
     .btn-danger {
-      background: var(--accent2);
+      background: linear-gradient(135deg, #ff2a5f 0%, #e8003a 100%);
       color: #fff;
+      box-shadow: 0 4px 14px var(--accent2-glow);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     .btn-danger:not(:disabled):hover {
-      opacity: 0.88;
+      box-shadow: 0 6px 20px var(--accent2-glow);
+      transform: translateY(-1px);
+      opacity: 1;
     }
 
     .btn-sm {
@@ -969,7 +996,7 @@
       color: var(--accent);
     }
 
-    /* ─── Generic confirmation modal ──────────────────────────── */
+    /* â”€â”€â”€ Generic confirmation modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -1128,7 +1155,7 @@
       }
     }
 
-    /* ─── Player Hub layout: main + station sidebar ──────────── */
+    /* â”€â”€â”€ Player Hub layout: main + station sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
     .hub-layout {
       display: grid;
       gap: 14px;
@@ -1162,7 +1189,7 @@
       }
     }
 
-    /* ─── Station status sidebar ──────────────────────────────── */
+    /* â”€â”€â”€ Station status sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
     .station-status-card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -1283,7 +1310,7 @@
       background: var(--accent);
     }
 
-    /* ─── Stream queue card ───────────────────────────────────── */
+    /* â”€â”€â”€ Stream queue card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
     .stream-queue-card {
       background: linear-gradient(135deg, rgba(114, 137, 218, 0.05), rgba(0, 229, 160, 0.03));
       border: 1px solid rgba(114, 137, 218, 0.4);
@@ -1491,7 +1518,7 @@
       font-size: 0.78rem;
     }
 
-    /* ─── Stream queue: per-stream sub-sections ─── */
+    /* â”€â”€â”€ Stream queue: per-stream sub-sections â”€â”€â”€ */
     .stream-section-label {
       font-size: 0.6rem;
       text-transform: uppercase;
@@ -1512,7 +1539,7 @@
       letter-spacing: 0;
     }
 
-    /* Queue item — looks like a candidate row but has reorder + delete controls */
+    /* Queue item â€” looks like a candidate row but has reorder + delete controls */
     .queue-item {
       display: flex;
       align-items: center;
@@ -1534,7 +1561,7 @@
       background: rgba(114, 137, 218, 0.06);
     }
 
-    /* Stream queue match readiness colors — come after .head so they override border-color */
+    /* Stream queue match readiness colors â€” come after .head so they override border-color */
     .queue-item.ready, .cand-row.ready { border-color: rgba(0, 229, 160, 0.55); background: rgba(0, 229, 160, 0.04); }
     .queue-item.proj,  .cand-row.proj  { border-color: rgba(220, 185, 0, 0.5);  background: rgba(220, 185, 0, 0.04); }
     .queue-item.tbd,   .cand-row.tbd   { border-color: rgba(255, 79, 109, 0.45); background: rgba(255, 79, 109, 0.04); }
@@ -1666,7 +1693,7 @@
       text-align: center;
     }
 
-    /* ─── Shiny ping flair animation (visual only — for hub badges) ─── */
+    /* â”€â”€â”€ Shiny ping flair animation (visual only â€” for hub badges) â”€â”€â”€ */
     @keyframes shimmer {
 
       0%,
@@ -1691,3 +1718,15 @@
       font-size: 0.65rem;
       letter-spacing: 0.5px;
     }
+@keyframes shimmer {
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+
+.skeleton {
+  animation: shimmer 2s infinite linear;
+  background: linear-gradient(to right, var(--surface) 4%, #1f2430 25%, var(--surface) 36%);
+  background-size: 1000px 100%;
+  border-radius: 4px;
+  color: transparent !important;
+}
