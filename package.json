@@ -1,0 +1,27 @@
+{
+  "name": "abbeytools",
+  "version": "1.0.0",
+  "description": "",
+  "main": "csv-handler.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RealLarsBars/abbeytools.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/RealLarsBars/abbeytools/issues"
+  },
+  "homepage": "https://github.com/RealLarsBars/abbeytools#readme",
+  "devDependencies": {
+    "vite": "^8.0.10"
+  }
+}
