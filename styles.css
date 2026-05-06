@@ -996,7 +996,7 @@
       color: var(--accent);
     }
 
-    /* â”€â”€â”€ Generic confirmation modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    /* ─── Generic confirmation modal ──────────────────────────── */
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -1155,7 +1155,7 @@
       }
     }
 
-    /* â”€â”€â”€ Player Hub layout: main + station sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    /* ─── Player Hub layout: main + station sidebar ──────────── */
     .hub-layout {
       display: grid;
       gap: 14px;
@@ -1189,7 +1189,7 @@
       }
     }
 
-    /* â”€â”€â”€ Station status sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    /* ─── Station status sidebar ──────────────────────────────── */
     .station-status-card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -1310,7 +1310,7 @@
       background: var(--accent);
     }
 
-    /* â”€â”€â”€ Stream queue card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    /* ─── Stream queue card ───────────────────────────────────── */
     .stream-queue-card {
       background: linear-gradient(135deg, rgba(114, 137, 218, 0.05), rgba(0, 229, 160, 0.03));
       border: 1px solid rgba(114, 137, 218, 0.4);
@@ -1518,7 +1518,7 @@
       font-size: 0.78rem;
     }
 
-    /* â”€â”€â”€ Stream queue: per-stream sub-sections â”€â”€â”€ */
+    /* ─── Stream queue: per-stream sub-sections ─── */
     .stream-section-label {
       font-size: 0.6rem;
       text-transform: uppercase;
@@ -1693,7 +1693,7 @@
       text-align: center;
     }
 
-    /* â”€â”€â”€ Shiny ping flair animation (visual only â€” for hub badges) â”€â”€â”€ */
+    /* ─── Shiny ping flair animation (visual only â€” for hub badges) ─── */
     @keyframes shimmer {
 
       0%,
