@@ -118,7 +118,7 @@ function renderStreamSetupSelectors() {
 }
 
 function getPhaseTiers() {
-  try { return JSON.parse(localStorage.getItem('abbey_phase_tiers') || '{}'); } catch (e) { return {}; }
+  try { return JSON.parse(localStorage.getItem('abbey_phase_tiers') || '{}'); } catch { return {}; }
 }
 function setPhaseTier(phaseId, tier) {
   const tiers = getPhaseTiers();
@@ -163,7 +163,7 @@ function renderStreamPriorityPicker(phases) {
 }
 
 function getStreamPriorityPhaseIds() {
-  try { return JSON.parse(localStorage.getItem('abbey_stream_priority_phases') || '[]'); } catch (e) { return []; }
+  try { return JSON.parse(localStorage.getItem('abbey_stream_priority_phases') || '[]'); } catch { return []; }
 }
 // Returns stream tier for a set:
 // 'main-only'        — Winners Top8, Losers Finals, Grand Finals

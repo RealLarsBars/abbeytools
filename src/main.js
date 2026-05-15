@@ -28,5 +28,5 @@ try {
       state.tagMap.get(tag).discordId = id;
     }
   }
-} catch (e) { }
+} catch (e) { /* ignore */ }
 try { renderLog(); } catch (e) { console.error('renderLog failed:', e); }

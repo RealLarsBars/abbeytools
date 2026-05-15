@@ -185,7 +185,7 @@ async function doPoll() {
           const ping = fromLoc
             ? buildRerouteToQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText, fromLoc })
             : buildQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText });
-          try { await sendWebhook(ping.content); } catch (e) { }
+          try { await sendWebhook(ping.content); } catch (e) { /* ignore */ }
           if (ping.shiny) toast(fromLoc ? '✨ SHINY REROUTE! 1/8192' : '✨ SHINY QUEUE PLACEMENT! 1/8192');
         }
 
