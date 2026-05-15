@@ -118,7 +118,7 @@ function requestHubDQ(setId) {
     });
   }
 
-  let context;
+  let context = '';
   if (!hasA && !hasB) context = '<strong style="color:var(--accent2)">Neither player checked in.</strong> Choose who to DQ.';
   else if (!hasA) context = `<strong>${nA}</strong> is missing. <strong>${nB}</strong> is checked in.`;
   else if (!hasB) context = `<strong>${nB}</strong> is missing. <strong>${nA}</strong> is checked in.`;
@@ -403,10 +403,10 @@ function updateVenueDashboardUI(allSets) {
   // moved to a stream.
   const placeholderIds = getPlaceholderStationIds();
   const allLocs = [
-    ...state.stationList
+    ...stationList
       .filter(s => !placeholderIds.has(String(s.id)))
       .map(s => ({ id: s.id, type: 'station', label: `Station ${s.number}`, sortIdx: s.number })),
-    ...state.streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
+    ...state.state.streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
   ];
   const activeSets = allSets.filter(s => (s.state === 2 || s.state === 6) && (s.station || s.stream));
 

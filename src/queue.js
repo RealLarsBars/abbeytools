@@ -191,7 +191,7 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
       state.queuePingedSetIds.add(String(setId));
       const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
       const ping = buildRerouteToQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText, fromLoc });
-      try { await sendWebhook(ping.content); } catch (e) { /* ignore */ }
+      try { await sendWebhook(ping.content); } catch (e) { }
       addPollLog(`${ping.shiny ? '✨ SHINY' : '🔄'} Rerouted to queue: ${nA} vs ${nB} → ${stream.streamName}`, 'new');
       if (ping.shiny) toast('✨ SHINY REROUTE! 1/8192');
     }
@@ -209,7 +209,7 @@ async function sendQueuePingForSet(set, stream) {
   state.queuePingedSetIds.add(String(set.id));
   const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
   const ping = buildQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText });
-  try { await sendWebhook(ping.content); } catch (e) { /* ignore */ }
+  try { await sendWebhook(ping.content); } catch (e) { }
   addPollLog(`${ping.shiny ? '✨ SHINY' : '🎬'} Queued: ${nA} vs ${nB} → ${stream.streamName}`, 'new');
   if (ping.shiny) toast('✨ SHINY QUEUE PLACEMENT! 1/8192');
 }
@@ -534,7 +534,7 @@ function getProjectedSlotName(slot) {
       const seed0 = fs0?.seed?.seedNum, seed1 = fs1?.seed?.seedNum;
       // prereqPlacement 1 = winner advances (pick better seed), 2 = loser advances (pick worse seed)
       const wantsWinner = (slot.prereqPlacement ?? 1) === 1;
-      let projected;
+      let projected = null;
       if (seed0 && seed1) {
         projected = wantsWinner
           ? (seed0 < seed1 ? fs0 : fs1)

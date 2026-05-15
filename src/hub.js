@@ -1,4 +1,4 @@
-import { _scoreKbdBuffer, _scoreKbdTimer, setScoreKbdBuffer } from './manual.js';
+import { _scoreKbdBuffer, _scoreKbdTimer } from './manual.js';
 import { discordOverrides, saveOverrides } from './state.js';
 import { saveStreamQueues, updateTimerCache, state, saveCheckins } from './state.js';
 import { renderStationSidebar, fetchManualSets } from './manual.js';
@@ -52,7 +52,7 @@ function renderPlayerHub() {
       : isQueued
         ? `${queuedLabel}${stationLabel ? ' · ' + stationLabel : ''}`
         : (stationLabel || 'No Location');
-    const escA = nameA.replace(/'/g, "\\'"), escB = nameB.replace(/'/g, "\\'");
+    const escA = nameA.replace(/'/g, "\'"), escB = nameB.replace(/'/g, "\'");
 
     if (set.state === 6) {
       const ciA = state.hubCheckins.has(`${set.id}-${a?.id}`), ciB = state.hubCheckins.has(`${set.id}-${b?.id}`);
@@ -204,7 +204,7 @@ function openScoreOverlay(setId, idA, idB, nameA, nameB, loc) {
   submitBtn.style.opacity = '0.4';
   submitBtn.style.pointerEvents = 'none';
   document.getElementById('scoreOverlay').style.display = 'flex';
-  setScoreKbdBuffer('');
+  _scoreKbdBuffer = '';
 }
 
 function setScore(player, value) {
@@ -224,7 +224,7 @@ function setScore(player, value) {
 
 function closeScoreOverlay() {
   document.getElementById('scoreOverlay').style.display = 'none';
-  _overlaySetId = null; setScoreKbdBuffer('');
+  _overlaySetId = null; _scoreKbdBuffer = '';
 }
 
 function updateOverlayScore() {
@@ -361,7 +361,7 @@ function manualLinkPlayer(playerIdx) {
   if (!id) { toast('Paste a numeric Discord user ID', true); return; }
   discordOverrides[p.tag.toLowerCase()] = id;
   saveOverrides();
-  try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); m[p.tag.toLowerCase()] = id; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { /* ignore */ }
+  try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); m[p.tag.toLowerCase()] = id; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { }
   const player = state.tagMap.get(p.tag.toLowerCase());
   if (player) player.discordId = id;
   p.discordId = id;
@@ -374,7 +374,7 @@ function unlinkPlayer(playerIdx) {
   if (!p) return;
   delete discordOverrides[p.tag.toLowerCase()];
   saveOverrides();
-  try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); delete m[p.tag.toLowerCase()]; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { /* ignore */ }
+  try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); delete m[p.tag.toLowerCase()]; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { }
   const player = state.tagMap.get(p.tag.toLowerCase());
   if (player) player.discordId = '';
   p.discordId = '';
