@@ -1,3 +1,13 @@
+import { addToStreamQueue, getPlaceholderStationIds, findQueueAssignment, sendQueuePingForSet, getPlaceholderStationForStream, renderStreamQueue, isInAnyQueue, callQueuedSetToStream } from './queue.js';
+import { sggQuery } from './api.js';
+import { buildRerouteToQueuePing, buildCallPing, buildQueuePing, sendWebhook } from './discord.js';
+import { state, getDiscordMention, saveStreamQueues, getLowestIncompletePhase, getEventField } from './state.js';
+import { getSetStreamTier, enforceAutoDQ, renderStreamSetupSelectors } from './streams.js';
+import { renderManualSets } from './manual.js';
+import { addPollLog, buildPollSnapshot, updateVenueDashboardUI } from './actions.js';
+import { updateHubWatchBtn } from './ui.js';
+import { toast, renderPlayerHub, logMatch } from './hub.js';
+
 // Poll
 // ─────────────────────────────────────────────────────────────
 async function doPoll() {
@@ -14,11 +24,11 @@ async function doPoll() {
     const allSets = setData?.data?.event?.sets?.nodes || [];
     if (venueData?.data?.event?.tournament) {
       const tourney = venueData.data.event.tournament;
-      stationList = (tourney.stations?.nodes || []).sort((a, b) => a.number - b.number);
-      streamList = tourney.streams || [];
+      state.stationList = (tourney.stations?.nodes || []).sort((a, b) => a.number - b.number);
+      state.streamList = tourney.streams || [];
       
       // NOTE: We deliberately do NOT sync from start.gg's streamQueue field.
-      // The local streamQueues object is the authoritative source of truth for
+      // The local state.streamQueues object is the authoritative source of truth for
       // queue ordering. start.gg's streamQueue is a flat list of every set
       // with a stream assigned (including live sets) and overwriting locally
       // from it created duplicate-entry and routing bugs. External assignments
@@ -29,22 +39,22 @@ async function doPoll() {
     const { freeLocs } = updateVenueDashboardUI(allSets);
     let availableStations = freeLocs.filter(l => l.type === 'station').sort((a, b) => a.sortIdx - b.sortIdx);
 
-    allFetchedSets = allSets;
-    activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
-    pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
+    state.allFetchedSets = allSets;
+    state.activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
+    state.state.state.pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
 
     // Prune hub slots once per poll cycle — after fresh data confirms which sets
     // are truly gone. Doing this here (not in renderPlayerHub) means any number
     // of renders between polls all show dashed placeholders rather than shifting.
-    { const pollActiveIds = new Set(activeSetsData.map(s => String(s.id)));
-      _hubSlotIds = _hubSlotIds.filter(id => pollActiveIds.has(id)); }
+    { const pollActiveIds = new Set(state.activeSetsData.map(s => String(s.id)));
+      state._hubSlotIds = state._hubSlotIds.filter(id => pollActiveIds.has(id)); }
 
     const autoOn = document.getElementById('autoAssignToggle')?.checked;
     const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
     const lowestPhase = getLowestIncompletePhase();
-    const lockedPending = pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
-    const usableStationCount = stationList.length - getPlaceholderStationIds().size;
-    addPollLog(`📊 auto:${autoOn ? "ON" : "OFF"} | bypassPhase:${bypassPhase ? "ON" : "OFF"} | total:${allSets.length} | pending:${pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${usableStationCount} str:${streamList.length}) | active:${activeSetsData.length}`);
+    const lockedPending = state.state.state.pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
+    const usableStationCount = state.stationList.length - getPlaceholderStationIds().size;
+    addPollLog(`📊 auto:${autoOn ? "ON" : "OFF"} | bypassPhase:${bypassPhase ? "ON" : "OFF"} | total:${allSets.length} | pending:${state.state.state.pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${usableStationCount} str:${state.streamList.length}) | active:${state.activeSetsData.length}`);
 
     // Per-cycle state snapshot: streams + queues, stations + occupants,
     // tracking-set sizes. Reflects what start.gg sent us this poll, BEFORE
@@ -63,7 +73,7 @@ async function doPoll() {
     const autoDqOn = document.getElementById('autoDqToggle')?.checked !== false;
 
     for (const set of calledSets) {
-      if (completedSetIds.has(String(set.id))) continue;
+      if (state.completedSetIds.has(String(set.id))) continue;
 
       // If this set was added to a stream queue locally, skip the entire
       // station ping flow. The queue ping has already been sent. When the TO
@@ -71,7 +81,7 @@ async function doPoll() {
       // We do NOT want the player getting both "you're queued for stream"
       // AND "go to station 1" — that's contradictory and confusing.
       if (isInAnyQueue(set.id)) {
-        announcedSetIds.add(String(set.id)); // mark as handled so it doesn't trigger later
+        state.announcedSetIds.add(String(set.id)); // mark as handled so it doesn't trigger later
         continue;
       }
 
@@ -83,18 +93,18 @@ async function doPoll() {
         try {
           await sggQuery(`mutation { assignStation(setId: "${set.id}", stationId: "${locToAssign.id}") { id } }`);
           set.station = { id: locToAssign.id, number: locToAssign.sortIdx };
-          recentlyAssignedLocs.set(String(locToAssign.id), Date.now());
+          state.recentlyAssignedLocs.set(String(locToAssign.id), Date.now());
         } catch (e) {
           addPollLog(`⚠️ Failed to auto-fix missing station for ${set.id}: ${e.message}`, 'err');
         }
       }
 
-      if (!announcedSetIds.has(String(set.id))) {
-        announcedSetIds.add(String(set.id));
+      if (!state.announcedSetIds.has(String(set.id))) {
+        state.announcedSetIds.add(String(set.id));
         const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
         const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
         const loc = set.station?.number ? `Station ${set.station.number}` : set.stream?.streamName ? `🎥 ${set.stream.streamName}` : '';
-        const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+        const dTs = Math.floor((Date.now() + state.DQ_MINUTES * 60 * 1000) / 1000);
         const ping = buildCallPing({ mA, mB, loc: loc || 'NO STATION', roundText: set.fullRoundText, dqTimestamp: dTs });
         await sendWebhook(ping.content);
         logMatch(nA, nB, loc || 'No Station', 'auto', set.id, set.slots[0]?.seed?.seedNum, set.slots[1]?.seed?.seedNum, ping.shiny);
@@ -104,7 +114,7 @@ async function doPoll() {
       }
 
       const callTime = set.updatedAt || set.createdAt || nowSec;
-      if ((nowSec - callTime) / 60 >= DQ_MINUTES && autoDqOn) {
+      if ((nowSec - callTime) / 60 >= state.DQ_MINUTES && autoDqOn) {
         await enforceAutoDQ(set);
       }
     }
@@ -126,12 +136,12 @@ async function doPoll() {
       if (!set.stream?.id) continue;
       const sid = String(set.id);
       const streamId = String(set.stream.id);
-      const stream = streamList.find(s => String(s.id) === streamId) || { id: streamId, streamName: set.stream.streamName };
+      const stream = state.streamList.find(s => String(s.id) === streamId) || { id: streamId, streamName: set.stream.streamName };
 
       // Always idempotently keep locks in sync with the source of truth.
       if (set.state === 2 || set.state === 6) {
-        recentlyAssignedLocs.set(streamId, Date.now());
-        if (set.station?.id) recentlyAssignedLocs.delete(String(set.station.id));
+        state.recentlyAssignedLocs.set(streamId, Date.now());
+        if (set.station?.id) state.recentlyAssignedLocs.delete(String(set.station.id));
       }
 
       if (set.state === 1) {
@@ -149,11 +159,11 @@ async function doPoll() {
         // loop below will pick the queue head when the stream is free.
         // Nothing ever transitions directly from "external stream assignment"
         // to "live on stream" — that path only exists via callQueuedSetToStream.
-        const isQueuedHere = (streamQueues[streamId] || []).some(x => String(x) === sid);
-        const alreadyAnnounced = streamAnnouncedSetIds.has(sid);
+        const isQueuedHere = (state.streamQueues[streamId] || []).some(x => String(x) === sid);
+        const alreadyAnnounced = state.state.state.streamAnnouncedSetIds.has(sid);
         if (isQueuedHere || alreadyAnnounced) continue;
 
-        const wasPingedToStation = announcedSetIds.has(sid);
+        const wasPingedToStation = state.announcedSetIds.has(sid);
         const fromLoc = wasPingedToStation && set.station?.number
           ? `Station ${set.station.number}`
           : null;
@@ -169,8 +179,8 @@ async function doPoll() {
         // Send appropriate ping. fromLoc → "plans changed" reroute ping.
         // No fromLoc → fresh queue ping (TO assigned stream out of nowhere).
         const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
-        if (nA !== '???' && nB !== '???' && !queuePingedSetIds.has(sid)) {
-          queuePingedSetIds.add(sid);
+        if (nA !== '???' && nB !== '???' && !state.state.state.queuePingedSetIds.has(sid)) {
+          state.state.state.queuePingedSetIds.add(sid);
           const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
           const ping = fromLoc
             ? buildRerouteToQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText, fromLoc })
@@ -188,15 +198,15 @@ async function doPoll() {
         // IN-PROGRESS + STREAM ASSIGNED — set is actively being played and
         // has a stream. Two cases:
         //   1. We promoted it via callQueuedSetToStream → already in
-        //      streamAnnouncedSetIds, all housekeeping (placeholder station,
+        //      state.state.state.streamAnnouncedSetIds, all housekeeping (placeholder station,
         //      stream re-assign) was done at promotion time. Skip.
         //   2. TO assigned stream mid-game → unusual. Track silently as
         //      occupied (so auto-promote doesn't double up) and do the
         //      placeholder swap to free the real station, but NEVER reset
-        //      state — players are mid-set and that would be destructive.
-        if (streamAnnouncedSetIds.has(sid)) continue;
+        //      state — state.players are mid-set and that would be destructive.
+        if (state.state.state.streamAnnouncedSetIds.has(sid)) continue;
 
-        streamAnnouncedSetIds.add(sid);
+        state.state.state.streamAnnouncedSetIds.add(sid);
         addPollLog(`📺 Mid-game stream assignment: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (no reset, no ping)`, 'new');
         const targetStnId = getPlaceholderStationForStream(streamId);
         if (targetStnId && String(set.station?.id) !== String(targetStnId)) {
@@ -221,10 +231,10 @@ async function doPoll() {
       ? _pgFilterForPromote.split(',').map(s => s.trim()).filter(Boolean)
       : [];
     if (autoQueueCallOn) {
-      for (const stream of streamList) {
+      for (const stream of state.streamList) {
         const sid = String(stream.id);
         if (!occupiedStreamIds.has(sid)) {
-          const queue = streamQueues[sid] || [];
+          const queue = state.streamQueues[sid] || [];
           if (queue.length > 0) {
             const nextSetId = queue[0];
             const nextSet = allSets.find(s => String(s.id) === String(nextSetId));
@@ -248,7 +258,7 @@ async function doPoll() {
               occupiedStreamIds.add(sid);
 
               // Remove from queue first
-              streamQueues[sid].shift();
+              state.streamQueues[sid].shift();
               saveStreamQueues();
               // Call it
               await callQueuedSetToStream(nextSetId, stream.id, stream.streamName);
@@ -261,24 +271,24 @@ async function doPoll() {
     // Drop sets from tracking sets once their stream/queue association ends —
     // so re-assigning later (after a pull or completion) pings again.
     const currentlyStreamed = new Set(allSets.filter(s => s.stream?.id && (s.state === 2 || s.state === 6)).map(s => String(s.id)));
-    for (const sid of [...streamAnnouncedSetIds]) {
-      if (!currentlyStreamed.has(sid)) streamAnnouncedSetIds.delete(sid);
+    for (const sid of [...state.state.streamAnnouncedSetIds]) {
+      if (!currentlyStreamed.has(sid)) state.state.state.streamAnnouncedSetIds.delete(sid);
     }
-    // queuePingedSetIds GC: drop entries no longer in any queue or live on stream.
+    // state.state.state.queuePingedSetIds GC: drop entries no longer in any queue or live on stream.
     const allQueuedAndLive = new Set([...currentlyStreamed]);
-    for (const q of Object.values(streamQueues)) {
+    for (const q of Object.values(state.streamQueues)) {
       for (const id of q) allQueuedAndLive.add(String(id));
     }
-    for (const sid of [...queuePingedSetIds]) {
-      if (!allQueuedAndLive.has(sid)) queuePingedSetIds.delete(sid);
+    for (const sid of [...state.state.queuePingedSetIds]) {
+      if (!allQueuedAndLive.has(sid)) state.state.state.queuePingedSetIds.delete(sid);
     }
 
     // 2. AUTO-ASSIGN — STATIONS ONLY. Streams are filled manually via the
     // Stream Queue. Auto-assign never picks streams now.
-    if (autoOn && pendingSetsData.length > 0 && availableStations.length > 0) {
+    if (autoOn && state.state.state.pendingSetsData.length > 0 && availableStations.length > 0) {
       const lowestIncompletePhase = getLowestIncompletePhase();
 
-      let pending = [...pendingSetsData];
+      let pending = [...state.state.pendingSetsData];
 
       // Phase group filter
       const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
@@ -299,7 +309,7 @@ async function doPoll() {
         .filter(loc => loc.type === 'station')
         .filter(loc => String(loc.id) !== mainPlaceholderId && String(loc.id) !== sidePlaceholderId);
 
-      const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (pendingSetsData[0] ? String(pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
+      const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (state.state.state.pendingSetsData[0] ? String(state.state.state.pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
       addPollLog(`🔍 after-filters:${pending.length} | pgFilter:[${pgAllowed.join(',')}] | sample pgId:${samplePgId} | stns:${availableStations.length} (streams: manual queue)`);
 
       // Stream-priority sets (main-only, stream-preferred) are NEVER auto-assigned
@@ -310,8 +320,8 @@ async function doPoll() {
         .filter(s => getSetStreamTier(s) === 'normal')
         .filter(s => !isInAnyQueue(s.id))
         .filter(s => !s.stream?.id)
-        .filter(s => !streamAnnouncedSetIds.has(String(s.id)))
-        .filter(s => !announcedSetIds.has(String(s.id)));
+        .filter(s => !state.state.state.streamAnnouncedSetIds.has(String(s.id)))
+        .filter(s => !state.announcedSetIds.has(String(s.id)));
 
       // Sort: phase order (lower first), then oldest first
       stationEligible.sort((a, b) => {
@@ -338,9 +348,9 @@ async function doPoll() {
           }
           // THEN assign the station using the updated ID
           // Lock location and announce set immediately to prevent double-calls
-          recentlyAssignedLocs.set(String(loc.id), Date.now());
-          announcedSetIds.add(String(ps.id));
-          announcedSetIds.add(String(targetId));
+          state.recentlyAssignedLocs.set(String(loc.id), Date.now());
+          state.announcedSetIds.add(String(ps.id));
+          state.announcedSetIds.add(String(targetId));
 
           let assignOk = false;
           try {
@@ -355,19 +365,19 @@ async function doPoll() {
           ps.state = 6;
           ps.updatedAt = Math.floor(Date.now() / 1000);
           ps.station = { id: loc.id, number: loc.sortIdx };
-          if (!activeSetsData.some(s => String(s.id) === String(targetId))) activeSetsData.push(ps);
+          if (!state.activeSetsData.some(s => String(s.id) === String(targetId))) state.activeSetsData.push(ps);
 
-          // announcedSetIds already set above before assignment
+          // state.announcedSetIds already set above before assignment
 
           const nA = ps.slots[0]?.entrant?.name || '???', nB = ps.slots[1]?.entrant?.name || '???';
           const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
-          const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+          const dTs = Math.floor((Date.now() + state.DQ_MINUTES * 60 * 1000) / 1000);
           const ping = buildCallPing({ mA, mB, loc: loc.label, roundText: ps.fullRoundText, dqTimestamp: dTs });
           await sendWebhook(ping.content);
           logMatch(nA, nB, loc.label, 'auto', targetId, ps.slots[0]?.seed?.seedNum, ps.slots[1]?.seed?.seedNum, ping.shiny);
           addPollLog(`${ping.shiny ? '✨ SHINY' : '⚡'} Auto-assigned & Pinged: ${nA} vs ${nB} to ${loc.label}`, 'new');
           if (ping.shiny) toast('✨ SHINY PING! 1/8192 — go check Discord');
-        } catch (err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); completedSetIds.delete(String(ps.id)); }
+        } catch (err) { addPollLog(`⚠️ Skipped set ${ps.id}: ${err.message}`, 'err'); state.completedSetIds.delete(String(ps.id)); }
       }
     }
 
@@ -387,7 +397,7 @@ async function doPoll() {
 
 async function startPolling() {
   const interval = parseInt(document.getElementById('pollInterval').value);
-  if (pollTimer) clearInterval(pollTimer);
+  if (state.pollTimer) clearInterval(state.pollTimer);
   document.getElementById('startPollBtn').disabled = true;
   document.getElementById('stopPollBtn').disabled = false;
   document.getElementById('autoStatus').textContent = 'Watching';
@@ -395,18 +405,18 @@ async function startPolling() {
   document.getElementById('autoMeta').textContent = 'Watching for sets called on any device…';
   document.getElementById('manualAutoBar').style.display = 'flex';
 
-  // Pre-populate streamAnnouncedSetIds with currently-streaming sets so that
+  // Pre-populate state.state.state.streamAnnouncedSetIds with currently-streaming sets so that
   // resuming polling after a pause doesn't spam pings for matches that have
   // been on stream for a while. New stream assignments after this point still
   // ping normally.
-  for (const s of allFetchedSets) {
+  for (const s of state.allFetchedSets) {
     if (s.stream?.id && (s.state === 2 || s.state === 6)) {
-      streamAnnouncedSetIds.add(String(s.id));
+      state.state.state.streamAnnouncedSetIds.add(String(s.id));
     }
   }
 
   // Apply the same filters as auto-assign before forcing a start.gg call
-  let validPending = pendingSetsData || [];
+  let validPending = state.state.state.pendingSetsData || [];
 
   // Skip queued sets — they're waiting for stream promotion, not a station call
   validPending = validPending.filter(s => !isInAnyQueue(s.id));
@@ -418,7 +428,7 @@ async function startPolling() {
   }
 
   const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
-  if (!bypassPhase && allFetchedSets.length > 0) {
+  if (!bypassPhase && state.allFetchedSets.length > 0) {
     const lowestIncompletePhase = getLowestIncompletePhase();
     validPending = validPending.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestIncompletePhase);
   }
@@ -436,13 +446,13 @@ async function startPolling() {
   }
 
   doPoll();
-  pollTimer = setInterval(doPoll, interval);
+  state.pollTimer = setInterval(doPoll, interval);
   addPollLog(`Auto watch started (every ${interval / 1000}s)`, 'new');
   updateHubWatchBtn();
 }
 
 function stopPolling() {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
   document.getElementById('startPollBtn').disabled = false;
   document.getElementById('stopPollBtn').disabled = true;
   document.getElementById('autoStatus').textContent = 'Stopped';
@@ -455,8 +465,8 @@ function stopPolling() {
 
 // ─────────────────────────────────────────────────────────────
 // Expose to window
-Object.assign(window, {
+export { 
   doPoll,
   startPolling,
   stopPolling,
-});
+ };

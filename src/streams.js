@@ -1,9 +1,14 @@
+import { toast } from './hub.js';
+import { sggQuery } from './api.js';
+import { markInProgressQuick, submitDQ } from './actions.js';
+import { getEventField, state } from './state.js';
+
 function getStreamScore(set) {
   const getSlotSeed = (slot) => {
     if (slot?.seed?.seedNum) return slot.seed.seedNum;
     if (slot?.prereqType === 'set' && slot?.prereqId) {
-      const feeder = allFetchedSets.find(s => String(s.id) === String(slot.prereqId)) ||
-        activeSetsData.find(s => String(s.id) === String(slot.prereqId));
+      const feeder = state.allFetchedSets.find(s => String(s.id) === String(slot.prereqId)) ||
+        state.activeSetsData.find(s => String(s.id) === String(slot.prereqId));
       if (feeder?.slots) {
         const s0 = feeder.slots[0]?.seed?.seedNum, s1 = feeder.slots[1]?.seed?.seedNum;
         if (s0 && s1) {
@@ -38,10 +43,10 @@ async function fetchAndPopulateStreams() {
   if (!eventField) { toast('Select an event first', true); return; }
   try {
     const data = await sggQuery(`query { ${eventField} { tournament { streams { id streamName } } } }`);
-    streamList = data?.data?.event?.tournament?.streams || [];
+    state.streamList = data?.data?.event?.tournament?.streams || [];
     renderPriorityStreamSelector();
     renderStreamSetupSelectors();
-    toast(`✓ ${streamList.length} streams loaded`);
+    toast(`✓ ${state.streamList.length} streams loaded`);
   } catch (e) { toast(`✗ ${e.message}`, true); }
 }
 
@@ -56,10 +61,10 @@ function getPriorityStreamId() {
 
 function renderPriorityStreamSelector() {
   const sel = document.getElementById('priorityStreamId');
-  if (!sel || !streamList.length) return;
+  if (!sel || !state.streamList.length) return;
   const saved = getPriorityStreamId();
   sel.innerHTML = '<option value="">Any available stream</option>';
-  for (const s of streamList) {
+  for (const s of state.streamList) {
     const opt = document.createElement('option');
     opt.value = String(s.id);
     opt.textContent = s.streamName;
@@ -102,10 +107,10 @@ function renderStreamSetupSelectors() {
     }
   };
 
-  populate(mainStr, streamList, savedMainStr, 'Select Stream...', true);
-  populate(sideStr, streamList, savedSideStr, 'Select Stream...', true);
-  populate(mainStn, stationList, savedMainStn, 'No dedicated station', false);
-  populate(sideStn, stationList, savedSideStn, 'No dedicated station', false);
+  populate(mainStr, state.streamList, savedMainStr, 'Select Stream...', true);
+  populate(sideStr, state.streamList, savedSideStr, 'Select Stream...', true);
+  populate(mainStn, state.stationList, savedMainStn, 'No dedicated station', false);
+  populate(sideStn, state.stationList, savedSideStn, 'No dedicated station', false);
 
   // Note: no toast/poll-log here — this function is called on every tab
   // switch and every fetchManualSets, so any output would spam. The
@@ -184,11 +189,11 @@ function getSetStreamTier(set) {
 function isStreamPriority(set) { return getSetStreamTier(set) !== 'normal'; }
 
 async function enforceAutoDQ(set) {
-  if (completedSetIds.has(String(set.id))) return;
+  if (state.completedSetIds.has(String(set.id))) return;
   const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
   const nA = set.slots[0]?.entrant?.name || 'Player 1', nB = set.slots[1]?.entrant?.name || 'Player 2';
   const seedA = set.slots[0]?.seed?.seedNum || 9999, seedB = set.slots[1]?.seed?.seedNum || 9999;
-  const hasA = hubCheckins.has(`${set.id}-${idA}`), hasB = hubCheckins.has(`${set.id}-${idB}`);
+  const hasA = state.hubCheckins.has(`${set.id}-${idA}`), hasB = state.hubCheckins.has(`${set.id}-${idB}`);
   if (hasA && hasB) { await markInProgressQuick(set.id, true); return; }
   if (!hasA && !hasB) { (seedA > seedB) ? await submitDQ(set.id, idB, idA, nB, true) : await submitDQ(set.id, idA, idB, nA, true); }
   else if (!hasA) { await submitDQ(set.id, idB, idA, nB, true); }
@@ -197,7 +202,7 @@ async function enforceAutoDQ(set) {
 
 // ─────────────────────────────────────────────────────────────
 // Expose to window
-Object.assign(window, {
+export { 
   getStreamScore,
   streamGrade,
   fetchAndPopulateStreams,
@@ -212,4 +217,4 @@ Object.assign(window, {
   getSetStreamTier,
   isStreamPriority,
   enforceAutoDQ,
-});
+ };

@@ -1,3 +1,11 @@
+import { fetchManualSets } from './manual.js';
+import { showConfirmModal, addPollLog } from './actions.js';
+import { sggQuery } from './api.js';
+import { buildStreamCallPing, buildRerouteToQueuePing, buildQueuePing, sendWebhook } from './discord.js';
+import { streamGrade, getStreamScore } from './streams.js';
+import { saveStreamQueues, getDiscordMention, state } from './state.js';
+import { toast } from './hub.js';
+
 // ─────────────────────────────────────────────────────────────
 // Stream Queue — manual stream slot management with per-stream queue
 // ─────────────────────────────────────────────────────────────
@@ -8,9 +16,9 @@
 // player hub to surface "queued for stream X" state on a player's match card,
 // and by other code paths to avoid duplicate queue placements.
 function findQueueAssignment(setId) {
-  for (const sid of Object.keys(streamQueues)) {
-    if (streamQueues[sid].some(x => String(x) === String(setId))) {
-      return { streamId: sid, position: streamQueues[sid].findIndex(x => String(x) === String(setId)) };
+  for (const sid of Object.keys(state.streamQueues)) {
+    if (state.streamQueues[sid].some(x => String(x) === String(setId))) {
+      return { streamId: sid, position: state.streamQueues[sid].findIndex(x => String(x) === String(setId)) };
     }
   }
   return null;
@@ -22,8 +30,8 @@ function findQueueAssignment(setId) {
 // must not generate a Set Called ping if a TO calls them externally.
 function isInAnyQueue(setId) {
   const target = String(setId);
-  for (const sid of Object.keys(streamQueues)) {
-    if (streamQueues[sid].some(x => String(x) === target)) return true;
+  for (const sid of Object.keys(state.streamQueues)) {
+    if (state.streamQueues[sid].some(x => String(x) === target)) return true;
   }
   return false;
 }
@@ -56,23 +64,23 @@ function getPlaceholderStationIds() {
 
 async function addToStreamQueue(setId, streamId, opts = {}) {
   const sid = String(streamId);
-  if (!streamQueues[sid]) streamQueues[sid] = [];
+  if (!state.streamQueues[sid]) state.streamQueues[sid] = [];
   // Remove from any other stream's queue first (a set can only be queued once)
-  for (const otherSid of Object.keys(streamQueues)) {
+  for (const otherSid of Object.keys(state.streamQueues)) {
     if (otherSid === sid) continue;
-    streamQueues[otherSid] = streamQueues[otherSid].filter(x => String(x) !== String(setId));
+    state.streamQueues[otherSid] = state.streamQueues[otherSid].filter(x => String(x) !== String(setId));
   }
   // Append if not already in this queue
-  const alreadyHere = streamQueues[sid].some(x => String(x) === String(setId));
+  const alreadyHere = state.streamQueues[sid].some(x => String(x) === String(setId));
   if (!alreadyHere) {
-    streamQueues[sid].push(String(setId));
+    state.streamQueues[sid].push(String(setId));
   }
   saveStreamQueues();
 
   // If this set was already station-pinged before we queue it, we'll send a
   // "sorry for the double ping / plans changed" reroute message instead of the
   // generic queue ping. Capture this BEFORE we mark it announced below.
-  const wasPreviouslyAnnouncedToStation = announcedSetIds.has(String(setId));
+  const wasPreviouslyAnnouncedToStation = state.announcedSetIds.has(String(setId));
 
   // Defensively suppress the station ping pipeline for this set. If the set
   // is already in state 6 when queued (e.g. you queued an already-called set),
@@ -80,7 +88,7 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
   // Marking it announced means: "we've already handled the player communication
   // for this set; don't send a station ping for it." The queue ping below is
   // the only player communication this set generates until ▶ CALL.
-  announcedSetIds.add(String(setId));
+  state.announcedSetIds.add(String(setId));
 
   // If the set has already been called/in-progress on a station, reset it back
   // to pending state on start.gg. This:
@@ -91,9 +99,9 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
   // resetSet is safe here because queued sets haven't had scores reported yet.
   // We skip the API call if the set never had a station assigned, since there's
   // nothing to reset. Failures are non-fatal — log and continue.
-  const setObj = allFetchedSets.find(s => String(s.id) === String(setId)) ||
-    activeSetsData.find(s => String(s.id) === String(setId)) ||
-    pendingSetsData.find(s => String(s.id) === String(setId));
+  const setObj = state.allFetchedSets.find(s => String(s.id) === String(setId)) ||
+    state.activeSetsData.find(s => String(s.id) === String(setId)) ||
+    state.pendingSetsData.find(s => String(s.id) === String(setId));
 
   // Capture the previous station location before the reset clears it.
   const fromLoc = wasPreviouslyAnnouncedToStation && setObj?.station?.number
@@ -121,12 +129,12 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
       const previousStationId = setObj.station?.id;
       setObj.station = null;
       setObj.state = 1;
-      if (previousStationId) recentlyAssignedLocs.delete(String(previousStationId));
-      activeSetsData = activeSetsData.filter(s => String(s.id) !== String(setId));
-      if (!pendingSetsData.some(s => String(s.id) === String(setId))) {
-        pendingSetsData.push(setObj);
+      if (previousStationId) state.recentlyAssignedLocs.delete(String(previousStationId));
+      state.activeSetsData = state.activeSetsData.filter(s => String(s.id) !== String(setId));
+      if (!state.pendingSetsData.some(s => String(s.id) === String(setId))) {
+        state.pendingSetsData.push(setObj);
       }
-      _hubSlotIds = _hubSlotIds.filter(id => id !== String(setId));
+      state._hubSlotIds = state._hubSlotIds.filter(id => id !== String(setId));
       addPollLog(`📋 Reset ${setId} to pending for queue`, 'new');
     } catch (e) {
       addPollLog(`⚠️ resetSet failed for ${setId}: ${e.message}`, 'err');
@@ -147,7 +155,7 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
       const resStr = await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
       addPollLog(`✅ [API] Stream assigned: ${JSON.stringify(resStr?.data?.assignStream || 'OK')}`);
       
-      const streamObj = streamList.find(s => String(s.id) === String(streamId));
+      const streamObj = state.streamList.find(s => String(s.id) === String(streamId));
       if (setObj && streamObj) {
         setObj.stream = { id: streamId, streamName: streamObj.streamName };
       }
@@ -169,18 +177,18 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
   // yet (pre-assignments to unfilled sets). For unfilled sets we re-trigger
   // this when the entrants get filled in via reconcileQueueOnPoll.
   if (opts.quiet) return;
-  const set = allFetchedSets.find(s => String(s.id) === String(setId)) ||
-    activeSetsData.find(s => String(s.id) === String(setId)) ||
-    pendingSetsData.find(s => String(s.id) === String(setId));
+  const set = state.allFetchedSets.find(s => String(s.id) === String(setId)) ||
+    state.activeSetsData.find(s => String(s.id) === String(setId)) ||
+    state.pendingSetsData.find(s => String(s.id) === String(setId));
   if (!set) return;
-  const stream = streamList.find(s => String(s.id) === sid);
+  const stream = state.streamList.find(s => String(s.id) === sid);
   if (!stream) return;
 
-  if (fromLoc && !queuePingedSetIds.has(String(setId))) {
+  if (fromLoc && !state.queuePingedSetIds.has(String(setId))) {
     // Set was already pinged to a station — apologize and explain the change.
     const nA = set.slots[0]?.entrant?.name, nB = set.slots[1]?.entrant?.name;
     if (nA && nB) {
-      queuePingedSetIds.add(String(setId));
+      state.queuePingedSetIds.add(String(setId));
       const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
       const ping = buildRerouteToQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText, fromLoc });
       try { await sendWebhook(ping.content); } catch (e) { }
@@ -197,8 +205,8 @@ async function addToStreamQueue(setId, streamId, opts = {}) {
 async function sendQueuePingForSet(set, stream) {
   const nA = set.slots[0]?.entrant?.name, nB = set.slots[1]?.entrant?.name;
   if (!nA || !nB) return; // unfilled set — wait until entrants resolve
-  if (queuePingedSetIds.has(String(set.id))) return; // already pinged
-  queuePingedSetIds.add(String(set.id));
+  if (state.queuePingedSetIds.has(String(set.id))) return; // already pinged
+  state.queuePingedSetIds.add(String(set.id));
   const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
   const ping = buildQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText });
   try { await sendWebhook(ping.content); } catch (e) { }
@@ -208,20 +216,20 @@ async function sendQueuePingForSet(set, stream) {
 
 async function removeFromStreamQueue(setId, streamId) {
   const sid = String(streamId);
-  if (!streamQueues[sid]) return;
-  streamQueues[sid] = streamQueues[sid].filter(x => String(x) !== String(setId));
-  queuePingedSetIds.delete(String(setId));
-  announcedSetIds.delete(String(setId));
-  streamAnnouncedSetIds.delete(String(setId));
+  if (!state.streamQueues[sid]) return;
+  state.streamQueues[sid] = state.streamQueues[sid].filter(x => String(x) !== String(setId));
+  state.queuePingedSetIds.delete(String(setId));
+  state.announcedSetIds.delete(String(setId));
+  state.streamAnnouncedSetIds.delete(String(setId));
   saveStreamQueues();
   renderStreamQueue();
 
   // Must also clear the stream assignment on start.gg. Without this, the
   // external-stream-assignment detector sees "pending + stream assigned + not
   // in local queue" and silently re-adds the set on the next poll.
-  const setObj = allFetchedSets.find(s => String(s.id) === String(setId)) ||
-    activeSetsData.find(s => String(s.id) === String(setId)) ||
-    pendingSetsData.find(s => String(s.id) === String(setId));
+  const setObj = state.allFetchedSets.find(s => String(s.id) === String(setId)) ||
+    state.activeSetsData.find(s => String(s.id) === String(setId)) ||
+    state.pendingSetsData.find(s => String(s.id) === String(setId));
 
   if (!setObj || setObj.state === 2 || setObj.state === 6) {
     // No object found, or set is actively in-progress — don't touch assignments.
@@ -232,14 +240,14 @@ async function removeFromStreamQueue(setId, streamId) {
   // Find a free real station (exclude stream-placeholder stations and occupied ones).
   const placeholderIds = getPlaceholderStationIds();
   const occupiedStationIds = new Set();
-  for (const s of activeSetsData) {
+  for (const s of state.activeSetsData) {
     if (s.station?.id && !s.stream?.id) occupiedStationIds.add(String(s.station.id));
   }
   const nowMs = Date.now();
-  for (const [locId, ts] of recentlyAssignedLocs.entries()) {
+  for (const [locId, ts] of state.recentlyAssignedLocs.entries()) {
     if (nowMs - ts < 180000) occupiedStationIds.add(String(locId));
   }
-  const openStation = stationList
+  const openStation = state.stationList
     .filter(s => !placeholderIds.has(String(s.id)) && !occupiedStationIds.has(String(s.id)))
     .sort((a, b) => a.number - b.number)[0];
 
@@ -249,9 +257,9 @@ async function removeFromStreamQueue(setId, streamId) {
       const prevStationId = setObj.station?.id;
       setObj.station = openStation;
       setObj.stream = null;
-      recentlyAssignedLocs.set(String(openStation.id), Date.now());
+      state.recentlyAssignedLocs.set(String(openStation.id), Date.now());
       if (prevStationId && String(prevStationId) !== String(openStation.id)) {
-        recentlyAssignedLocs.delete(String(prevStationId));
+        state.recentlyAssignedLocs.delete(String(prevStationId));
       }
       addPollLog(`📍 Removed from queue → Station ${openStation.number} (${setId})`, 'new');
       toast(`📍 Removed from queue → Station ${openStation.number}`);
@@ -278,7 +286,7 @@ async function removeFromStreamQueue(setId, streamId) {
 }
 
 function clearAllQueues() {
-  const total = Object.values(streamQueues).reduce((n, q) => n + q.length, 0);
+  const total = Object.values(state.streamQueues).reduce((n, q) => n + q.length, 0);
   if (total === 0) { toast('Queues are already empty'); return; }
   showConfirmModal({
     title: '🗑 Clear All Queues',
@@ -290,8 +298,8 @@ function clearAllQueues() {
         variant: 'danger',
         icon: '🗑',
         onClick: () => {
-          streamQueues = {};
-          queuePingedSetIds.clear();
+          state.streamQueues = {};
+          state.queuePingedSetIds.clear();
           saveStreamQueues();
           renderStreamQueue();
           addPollLog('🗑 All stream queues cleared', 'err');
@@ -304,7 +312,7 @@ function clearAllQueues() {
 
 function moveInStreamQueue(setId, streamId, dir) {
   const sid = String(streamId);
-  const q = streamQueues[sid];
+  const q = state.streamQueues[sid];
   if (!q) return;
   const idx = q.findIndex(x => String(x) === String(setId));
   if (idx < 0) return;
@@ -322,14 +330,14 @@ function moveInStreamQueue(setId, streamId, dir) {
  */
 function sortStreamQueue(streamId) {
   const sid = String(streamId);
-  const queue = streamQueues[sid] || [];
+  const queue = state.streamQueues[sid] || [];
   if (!queue.length) return false;
 
   const filled = [], projected = [], tbd = [], missing = [];
   for (const setId of queue) {
-    const set = allFetchedSets.find(s => String(s.id) === String(setId)) ||
-      activeSetsData.find(s => String(s.id) === String(setId)) ||
-      pendingSetsData.find(s => String(s.id) === String(setId));
+    const set = state.allFetchedSets.find(s => String(s.id) === String(setId)) ||
+      state.activeSetsData.find(s => String(s.id) === String(setId)) ||
+      state.pendingSetsData.find(s => String(s.id) === String(setId));
     if (!set) { missing.push(setId); continue; }
     if (set.slots?.[0]?.entrant?.name && set.slots?.[1]?.entrant?.name) { filled.push(setId); continue; }
     const slotA = getProjectedSlotName(set.slots?.[0]);
@@ -340,7 +348,7 @@ function sortStreamQueue(streamId) {
   const sorted = [...filled, ...projected, ...tbd, ...missing];
   const changed = sorted.some((id, i) => id !== queue[i]);
   if (changed) {
-    streamQueues[sid] = sorted;
+    state.streamQueues[sid] = sorted;
     saveStreamQueues();
   }
   return changed;
@@ -353,12 +361,12 @@ function cleanStreamQueues() {
   let changed = false;
   const newlyResolved = []; // {set, stream} pairs to ping post-cleanup
 
-  for (const sid of Object.keys(streamQueues)) {
-    const before = streamQueues[sid].length;
-    streamQueues[sid] = streamQueues[sid].filter(setId => {
-      const s = activeSetsData.find(x => String(x.id) === String(setId)) ||
-        pendingSetsData.find(x => String(x.id) === String(setId)) ||
-        allFetchedSets.find(x => String(x.id) === String(setId));
+  for (const sid of Object.keys(state.streamQueues)) {
+    const before = state.streamQueues[sid].length;
+    state.streamQueues[sid] = state.streamQueues[sid].filter(setId => {
+      const s = state.activeSetsData.find(x => String(x.id) === String(setId)) ||
+        state.pendingSetsData.find(x => String(x.id) === String(setId)) ||
+        state.allFetchedSets.find(x => String(x.id) === String(setId));
 
       // If the set isn't in our current fetch, it might be further down in the bracket.
       // We only remove it if we explicitly find it in a completed state.
@@ -370,20 +378,20 @@ function cleanStreamQueues() {
       if ((s.state === 2 || s.state === 6) && s.stream?.id && String(s.stream.id) === sid) return false;
       return true;
     });
-    if (streamQueues[sid].length !== before) {
+    if (state.streamQueues[sid].length !== before) {
       changed = true;
       sortStreamQueue(sid);
     }
 
     // Reconciliation pass: identify queued sets whose entrants just got filled
     // in (e.g. winners-side feeds into a Top 8 set), so we can ping them now.
-    const stream = streamList.find(s => String(s.id) === sid);
+    const stream = state.streamList.find(s => String(s.id) === sid);
     if (stream) {
-      for (const setId of streamQueues[sid]) {
-        const s = allFetchedSets.find(x => String(x.id) === String(setId));
+      for (const setId of state.streamQueues[sid]) {
+        const s = state.allFetchedSets.find(x => String(x.id) === String(setId));
         if (!s) continue;
         const filled = !!(s.slots?.[0]?.entrant?.name && s.slots?.[1]?.entrant?.name);
-        if (filled && !queuePingedSetIds.has(String(s.id))) {
+        if (filled && !state.queuePingedSetIds.has(String(s.id))) {
           newlyResolved.push({ set: s, stream });
         }
       }
@@ -401,16 +409,16 @@ function cleanStreamQueues() {
 // This is the moment we ping "you're up on stream" and run the API call.
 function promoteFromQueue(streamId) {
   const sid = String(streamId);
-  const q = streamQueues[sid] || [];
+  const q = state.streamQueues[sid] || [];
   if (!q.length) { toast('Queue is empty for this stream', true); return; }
   const setId = q[0];
-  const stream = streamList.find(s => String(s.id) === sid);
+  const stream = state.streamList.find(s => String(s.id) === sid);
   if (!stream) { toast('Stream not found', true); return; }
-  const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
-    pendingSetsData.find(s => String(s.id) === String(setId)) ||
-    allFetchedSets.find(s => String(s.id) === String(setId));
+  const set = state.activeSetsData.find(s => String(s.id) === String(setId)) ||
+    state.pendingSetsData.find(s => String(s.id) === String(setId)) ||
+    state.allFetchedSets.find(s => String(s.id) === String(setId));
   if (!set) {
-    streamQueues[sid].shift();
+    state.streamQueues[sid].shift();
     saveStreamQueues();
     renderStreamQueue();
     toast('Queued match no longer available', true);
@@ -429,8 +437,8 @@ function promoteFromQueue(streamId) {
     title: '▶ Call to Stream',
     message: `Call <strong>${nA} vs ${nB}</strong> to <strong>${stream.streamName}</strong>?` +
       (fromStation
-        ? `<br><br>This will free up <strong>${fromStation}</strong>, assign the set to the stream on start.gg, and ping the players in Discord that they're up.`
-        : `<br><br>This will assign the set to the stream on start.gg and ping the players that they're up.`),
+        ? `<br><br>This will free up <strong>${fromStation}</strong>, assign the set to the stream on start.gg, and ping the state.players in Discord that they're up.`
+        : `<br><br>This will assign the set to the stream on start.gg and ping the state.players that they're up.`),
     variant: 'info',
     buttons: [{
       label: `Yes — call to ${stream.streamName}`,
@@ -439,7 +447,7 @@ function promoteFromQueue(streamId) {
       icon: '🎥',
       onClick: async () => {
         // Drop from queue first so re-renders don't show it twice
-        streamQueues[sid] = streamQueues[sid].filter(x => String(x) !== String(setId));
+        state.streamQueues[sid] = state.streamQueues[sid].filter(x => String(x) !== String(setId));
         saveStreamQueues();
         await callQueuedSetToStream(setId, stream.id, stream.streamName);
       },
@@ -450,14 +458,14 @@ function promoteFromQueue(streamId) {
 // Actually fires the API call + the "you're up" ping. Replaces the old
 // moveToStream flow for the queue path.
 async function callQueuedSetToStream(setId, streamId, streamName) {
-  const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
-    pendingSetsData.find(s => String(s.id) === String(setId)) ||
-    allFetchedSets.find(s => String(s.id) === String(setId));
+  const set = state.activeSetsData.find(s => String(s.id) === String(setId)) ||
+    state.pendingSetsData.find(s => String(s.id) === String(setId)) ||
+    state.allFetchedSets.find(s => String(s.id) === String(setId));
   if (!set) { toast('Set not found', true); return; }
   const previousStationId = set.station?.id;
 
   // Mark as already-announced for the external detector so it doesn't double-ping.
-  streamAnnouncedSetIds.add(String(setId));
+  state.streamAnnouncedSetIds.add(String(setId));
 
   try {
     // "Call" the set on start.gg (moves State 1 -> 6). This makes it official.
@@ -482,8 +490,8 @@ async function callQueuedSetToStream(setId, streamId, streamName) {
 
     set.stream = { id: streamId, streamName: streamName };
     set.state = 6; // Locally mark as Called
-    recentlyAssignedLocs.set(String(streamId), Date.now());
-    if (previousStationId) recentlyAssignedLocs.delete(String(previousStationId));
+    state.recentlyAssignedLocs.set(String(streamId), Date.now());
+    if (previousStationId) state.recentlyAssignedLocs.delete(String(previousStationId));
 
     const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
     const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
@@ -496,7 +504,7 @@ async function callQueuedSetToStream(setId, streamId, streamName) {
 
     fetchManualSets();
   } catch (e) {
-    streamAnnouncedSetIds.delete(String(setId));
+    state.streamAnnouncedSetIds.delete(String(setId));
     toast(`✗ Call to stream failed: ${e.message}`, true);
     addPollLog(`⚠️ callQueuedSetToStream(${setId} → ${streamId}) failed: ${e.message}`, 'err');
   }
@@ -504,8 +512,8 @@ async function callQueuedSetToStream(setId, streamId, streamName) {
 
 function toggleAddQueuePanel(streamId) {
   const sid = String(streamId);
-  if (_expandedAddQueues.has(sid)) _expandedAddQueues.delete(sid);
-  else _expandedAddQueues.add(sid);
+  if (state._expandedAddQueues.has(sid)) state._expandedAddQueues.delete(sid);
+  else state._expandedAddQueues.add(sid);
   renderStreamQueue();
 }
 
@@ -514,13 +522,13 @@ function toggleAddQueuePanel(streamId) {
 // Returns { name, projected } for a slot.
 // If the slot has an entrant, uses their name directly.
 // If the slot is unfilled but has a prereqType="set", looks up the feeder set
-// in allFetchedSets and takes the first listed entrant name + "?" as the projection.
+// in state.allFetchedSets and takes the first listed entrant name + "?" as the projection.
 // Falls back to "TBD" when no projection is available.
 function getProjectedSlotName(slot) {
   if (slot?.entrant?.name) return { name: slot.entrant.name, projected: false };
   if (slot?.prereqType === 'set' && slot?.prereqId) {
-    const feederSet = allFetchedSets.find(s => String(s.id) === String(slot.prereqId)) ||
-      activeSetsData.find(s => String(s.id) === String(slot.prereqId));
+    const feederSet = state.allFetchedSets.find(s => String(s.id) === String(slot.prereqId)) ||
+      state.activeSetsData.find(s => String(s.id) === String(slot.prereqId));
     if (feederSet) {
       const fs0 = feederSet.slots?.[0], fs1 = feederSet.slots?.[1];
       const seed0 = fs0?.seed?.seedNum, seed1 = fs1?.seed?.seedNum;
@@ -553,7 +561,7 @@ function formatElapsed(ms) {
 function renderStreamQueue() {
   const el = document.getElementById('streamQueueSlots');
   if (!el) return;
-  if (!streamList.length) {
+  if (!state.streamList.length) {
     el.innerHTML = '<div style="font-size:0.78rem;color:var(--muted);padding:10px 0;">No streams configured for this event.</div>';
     return;
   }
@@ -562,12 +570,12 @@ function renderStreamQueue() {
   // stale "Match loading…" stubs always sink to the bottom regardless of when
   // they were added (sort only runs on change, so this is cheap on steady state).
   cleanStreamQueues();
-  for (const sid of Object.keys(streamQueues)) sortStreamQueue(sid);
+  for (const sid of Object.keys(state.streamQueues)) sortStreamQueue(sid);
 
   // Build a Set of all setIds currently queued anywhere — used to filter the candidate pool
   const allQueuedIds = new Set();
-  for (const sid of Object.keys(streamQueues)) {
-    for (const id of streamQueues[sid]) allQueuedIds.add(String(id));
+  for (const sid of Object.keys(state.streamQueues)) {
+    for (const id of state.streamQueues[sid]) allQueuedIds.add(String(id));
   }
 
   // Apply the same phase-group filter that auto-assign uses, so disabled pools
@@ -584,7 +592,7 @@ function renderStreamQueue() {
   // assigning streams to those, so the user can pre-queue Top 8 etc. before
   // the bracket fills in. State 1/2/6, not already on a stream, not already
   // queued anywhere, restricted to enabled pools.
-  const candidatePool = allFetchedSets
+  const candidatePool = state.allFetchedSets
     .filter(s => s.state === 1 || s.state === 2 || s.state === 6)
     .filter(s => !s.stream?.id)
     .filter(s => !allQueuedIds.has(String(s.id)))
@@ -616,7 +624,7 @@ function renderStreamQueue() {
     const readinessClass = filled ? 'ready' : projected ? 'proj' : 'tbd';
     return `<div class="cand-row ${readinessClass}" onclick="addToStreamQueue('${set.id}', '${streamId}')" title="Add to ${streamName} queue">
       <div class="cand-info">
-        <div class="cand-players" style="${nameStyle}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
+        <div class="cand-state.players" style="${nameStyle}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
         <div class="cand-meta">${round} · ${fromLoc}${sA && sB ? ` · seeds ${sA}/${sB}` : ''}${metaSuffix}</div>
       </div>
       <div class="cand-grade">${grade || ''}</div>
@@ -624,9 +632,9 @@ function renderStreamQueue() {
   };
 
   const buildQueueItem = (setId, streamId, idx, queueLen, streamIsLive) => {
-    const set = activeSetsData.find(s => String(s.id) === String(setId)) ||
-      pendingSetsData.find(s => String(s.id) === String(setId)) ||
-      allFetchedSets.find(s => String(s.id) === String(setId));
+    const set = state.activeSetsData.find(s => String(s.id) === String(setId)) ||
+      state.pendingSetsData.find(s => String(s.id) === String(setId)) ||
+      state.allFetchedSets.find(s => String(s.id) === String(setId));
     if (!set) return ''; // not in current fetch — sorted to bottom, hidden until resolved
     const slotA = getProjectedSlotName(set.slots[0]);
     const slotB = getProjectedSlotName(set.slots[1]);
@@ -653,7 +661,7 @@ function renderStreamQueue() {
     return `<div class="queue-item ${isHead ? 'head ' : ''}${readinessClass}">
       <div class="qi-pos">${idx + 1}</div>
       <div class="qi-info">
-        <div class="qi-players" style="${nameStyle}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
+        <div class="qi-state.players" style="${nameStyle}">${a} <span style="color:var(--muted);font-weight:400;font-style:normal;">vs</span> ${b}</div>
         <div class="qi-meta">${round} · ${fromLoc}${metaSuffix}</div>
       </div>
       <div class="qi-controls">
@@ -665,18 +673,18 @@ function renderStreamQueue() {
     </div>`;
   };
 
-  el.innerHTML = streamList.map(stream => {
+  el.innerHTML = state.streamList.map(stream => {
     const sid = String(stream.id);
-    const queue = streamQueues[sid] || [];
-    const occupant = activeSetsData.find(s => String(s.stream?.id) === sid && (s.state === 2 || s.state === 6));
+    const queue = state.streamQueues[sid] || [];
+    const occupant = state.activeSetsData.find(s => String(s.stream?.id) === sid && (s.state === 2 || s.state === 6));
     const escName = String(stream.streamName).replace(/'/g, "\\'");
 
     // ─ LIVE NOW section ─
     // Track how long this stream has been without an active match
     if (occupant) {
-      delete streamEmptySince[sid];
-    } else if (!streamEmptySince[sid]) {
-      streamEmptySince[sid] = Date.now();
+      delete state.streamEmptySince[sid];
+    } else if (!state.streamEmptySince[sid]) {
+      state.streamEmptySince[sid] = Date.now();
     }
 
     let liveSection;
@@ -708,7 +716,7 @@ function renderStreamQueue() {
         </div>
       </div>`;
     } else {
-      const emptySince = streamEmptySince[sid];
+      const emptySince = state.streamEmptySince[sid];
       const emptyDuration = emptySince ? formatElapsed(Date.now() - emptySince) : null;
       liveSection = `<div class="stream-slot empty">
         <div class="ss-head">
@@ -723,9 +731,9 @@ function renderStreamQueue() {
     // Hide pure TBD-vs-TBD entries from the visible queue; they're still tracked
     // in the queue data and surface automatically once entrants are determined.
     const visibleQueue = queue.filter(id => {
-      const s = allFetchedSets.find(x => String(x.id) === id) ||
-        activeSetsData.find(x => String(x.id) === id) ||
-        pendingSetsData.find(x => String(x.id) === id);
+      const s = state.allFetchedSets.find(x => String(x.id) === id) ||
+        state.activeSetsData.find(x => String(x.id) === id) ||
+        state.pendingSetsData.find(x => String(x.id) === id);
       if (!s) return true; // keep stubs ("Match loading…")
       if (s.slots?.[0]?.entrant?.name || s.slots?.[1]?.entrant?.name) return true;
       const sA = getProjectedSlotName(s.slots?.[0]), sB = getProjectedSlotName(s.slots?.[1]);
@@ -742,7 +750,7 @@ function renderStreamQueue() {
         : `<div class="empty-queue-msg">Queue is empty — add matches below.</div>`);
 
     // ─ ADD-TO-QUEUE section (collapsible) ─
-    const isExpanded = _expandedAddQueues.has(sid);
+    const isExpanded = state._expandedAddQueues.has(sid);
     const candHtml = candidatePool.length
       ? candidatePool.map(set => buildCandidateRow(set, sid, escName)).join('')
       : `<div class="empty-queue-msg">No matches available to queue right now.</div>`;
@@ -765,7 +773,7 @@ function renderStreamQueue() {
 
 // ─────────────────────────────────────────────────────────────
 // Expose to window
-Object.assign(window, {
+export { 
   findQueueAssignment,
   isInAnyQueue,
   getPlaceholderStationForStream,
@@ -783,4 +791,4 @@ Object.assign(window, {
   getProjectedSlotName,
   formatElapsed,
   renderStreamQueue,
-});
+ };

@@ -1,3 +1,12 @@
+import { _overlayScoreA, _overlayScoreB, _overlayNameA, _overlayNameB } from './hub.js';
+import { sggQuery } from './api.js';
+import { getPlaceholderStationIds, renderStreamQueue } from './queue.js';
+import { updateTimerCache, state, saveCheckins, getDiscordMention, $, getEventField } from './state.js';
+import { closeScoreOverlay, toast, renderPlayerHub, submitOverlayScore, logMatch, setScore } from './hub.js';
+import { buildCallPing, sendWebhook } from './discord.js';
+import { updateVenueDashboardUI, markInProgressQuick } from './actions.js';
+import { renderStreamSetupSelectors } from './streams.js';
+
 // Manual Sets
 // ─────────────────────────────────────────────────────────────
 function formatWait(createdAt) {
@@ -19,16 +28,16 @@ async function fetchManualSets() {
       sggQuery(`query { ${eventField} { tournament { streams { id streamName } stations(page: 1, perPage: 30) { nodes { id number } } } } }`).catch(() => null)
     ]);
     const allSets = setData?.data?.event?.sets?.nodes || [];
-    allFetchedSets = allSets.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-    activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
-    pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
+    state.allFetchedSets = allSets.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    state.activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
+    state.pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
     if (stationData?.data?.event?.tournament) {
       const tourney = stationData.data.event.tournament;
       if (tourney.stations?.nodes) {
-        stationList = tourney.stations.nodes.sort((a, b) => a.number - b.number);
+        state.stationList = tourney.stations.nodes.sort((a, b) => a.number - b.number);
       }
       if (tourney.streams) {
-        streamList = tourney.streams || [];
+        state.streamList = tourney.streams || [];
       }
     }
     renderManualSets(); renderPlayerHub(); renderStreamQueue(); updateVenueDashboardUI(allSets); renderStreamSetupSelectors();
@@ -46,11 +55,11 @@ function renderManualSets() {
   // assignment dropdown so a TO can't accidentally send a non-streamed match
   // to the stream station. Streams remain available in their own optgroup.
   const placeholderIds = getPlaceholderStationIds();
-  const stationsForDropdown = stationList.filter(s => !placeholderIds.has(String(s.id)));
+  const stationsForDropdown = state.stationList.filter(s => !placeholderIds.has(String(s.id)));
   // Sort by bracket stage (phaseOrder ascending) then by duration (oldest first)
   // For state 6 (called) and state 2 (in progress), use updatedAt as the call/start time
   // For state 1 (pending), use createdAt
-  const toRender = allFetchedSets
+  const toRender = state.allFetchedSets
     .filter(s => selectedStates.includes(s.state))
     .slice()
     .sort((a, b) => {
@@ -65,7 +74,7 @@ function renderManualSets() {
   el.innerHTML = toRender.map(set => {
     const a = set.slots[0]?.entrant, b = set.slots[1]?.entrant;
     const nameA = a?.name || '???', nameB = b?.name || '???';
-    const ciA = hubCheckins.has(`${set.id}-${a?.id}`), ciB = hubCheckins.has(`${set.id}-${b?.id}`);
+    const ciA = state.hubCheckins.has(`${set.id}-${a?.id}`), ciB = state.hubCheckins.has(`${set.id}-${b?.id}`);
     // Prefer stream label when both are set (stream wins; station is freed)
     const onStream = !!set.stream?.streamName;
     const loc = onStream ? `🎥 ${set.stream.streamName}` : (set.station?.number ? `Station ${set.station.number}` : '');
@@ -97,7 +106,7 @@ function renderManualSets() {
         <select id="stn-${set.id}" style="flex:1;font-size:0.78rem;">
           <option value="">No assignment</option>
           ${stationsForDropdown.length ? `<optgroup label="Stations">${stationsForDropdown.map(s => `<option value="station:${s.id}" data-num="${s.number}" ${set.station?.number == s.number ? 'selected' : ''}>Station ${s.number}</option>`).join('')}</optgroup>` : ''}
-          ${streamList.length ? `<optgroup label="Streams">${streamList.map(s => `<option value="stream:${s.id}" data-name="${s.streamName}" ${set.stream?.id == s.id ? 'selected' : ''}>🎥 ${s.streamName}</option>`).join('')}</optgroup>` : ''}
+          ${state.streamList.length ? `<optgroup label="Streams">${state.streamList.map(s => `<option value="stream:${s.id}" data-name="${s.streamName}" ${set.stream?.id == s.id ? 'selected' : ''}>🎥 ${s.streamName}</option>`).join('')}</optgroup>` : ''}
         </select>
         <button class="set-call-btn" onclick="callSetFromPanel('${set.id}')">📢 Call</button>
       </div>
@@ -107,7 +116,7 @@ function renderManualSets() {
 }
 
 async function callSetFromPanel(setId) {
-  const set = allFetchedSets.find(s => String(s.id) === String(setId));
+  const set = state.allFetchedSets.find(s => String(s.id) === String(setId));
   if (!set) return;
   const stnSelect = document.getElementById(`stn-${setId}`);
   const stnValue = stnSelect?.value || '';
@@ -126,23 +135,23 @@ async function callSetFromPanel(setId) {
     if (isStation) {
       const sid = stnValue.replace('station:', '');
       await sggQuery(`mutation { assignStation(setId: "${targetId}", stationId: "${sid}") { id } }`);
-      recentlyAssignedLocs.set(String(sid), Date.now()); // Locally lock the station
+      state.recentlyAssignedLocs.set(String(sid), Date.now()); // Locally lock the station
     }
     else if (isStream) {
       const sid = stnValue.replace('stream:', '');
       await sggQuery(`mutation { assignStream(setId: "${targetId}", streamId: "${sid}") { id } }`);
-      recentlyAssignedLocs.set(String(sid), Date.now()); // Locally lock the stream
+      state.recentlyAssignedLocs.set(String(sid), Date.now()); // Locally lock the stream
     }
 
     const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
     const locName = isStation ? `Station ${selectedOpt.dataset.num}` : isStream ? `🎥 ${selectedOpt.dataset.name}` : '?';
     const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
-    const dTs = Math.floor((Date.now() + DQ_MINUTES * 60 * 1000) / 1000);
+    const dTs = Math.floor((Date.now() + state.DQ_MINUTES * 60 * 1000) / 1000);
     const ping = buildCallPing({ mA, mB, loc: locName, roundText: set.fullRoundText, dqTimestamp: dTs });
     await sendWebhook(ping.content);
 
-    announcedSetIds.add(String(targetId));
-    if (targetId !== setId) announcedSetIds.add(String(setId));
+    state.announcedSetIds.add(String(targetId));
+    if (targetId !== setId) state.announcedSetIds.add(String(setId));
 
     toast(`${ping.shiny ? '✨ SHINY ' : ''}📢 ${nA} vs ${nB}`);
     if (ping.shiny) toast('✨ SHINY PING! 1/8192 — go check Discord');
@@ -155,16 +164,16 @@ async function callSetFromPanel(setId) {
 // ─────────────────────────────────────────────────────────────
 async function toggleHubCheckin(setId, entrantId, name) {
   const key = `${setId}-${entrantId}`;
-  if (hubCheckins.has(key)) hubCheckins.delete(key);
-  else { hubCheckins.add(key); toast(`🟢 ${name} checked in!`); }
+  if (state.hubCheckins.has(key)) state.hubCheckins.delete(key);
+  else { state.hubCheckins.add(key); toast(`🟢 ${name} checked in!`); }
   saveCheckins();
-  const set = activeSetsData.find(s => String(s.id) === String(setId)) || pendingSetsData.find(s => String(s.id) === String(setId));
+  const set = state.activeSetsData.find(s => String(s.id) === String(setId)) || state.pendingSetsData.find(s => String(s.id) === String(setId));
   if (set && set.state === 6) {
     const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
-    if (hubCheckins.has(`${setId}-${idA}`) && hubCheckins.has(`${setId}-${idB}`)) {
+    if (state.hubCheckins.has(`${setId}-${idA}`) && state.hubCheckins.has(`${setId}-${idB}`)) {
       // Re-render first so both checkmarks are visible, then transition after a short delay
       renderPlayerHub(); renderManualSets();
-      toast('Both players checked in!');
+      toast('Both state.players checked in!');
       setTimeout(async () => {
         await markInProgressQuick(setId, true);
       }, 1200);
@@ -177,7 +186,9 @@ async function toggleHubCheckin(setId, entrantId, name) {
 // ─────────────────────────────────────────────────────────────
 // Keyboard shortcut: "32Enter" fills scores and submits
 // ─────────────────────────────────────────────────────────────
-window._scoreKbdBuffer = ''; window._scoreKbdTimer = null;
+export export let _scoreKbdBuffer = ''; export export let _scoreKbdTimer = null;
+export function setScoreKbdBuffer(val) { _scoreKbdBuffer = val; }
+export function setScoreKbdTimer(val) { _scoreKbdTimer = val; }
 
 document.addEventListener('keydown', e => {
   const overlay = document.getElementById('scoreOverlay');
@@ -249,7 +260,7 @@ function updateScoreUI(setId, nameA, nameB, prefix = "") {
 function renderStationSidebar() {
   const el = document.getElementById('stationStatusList');
   if (!el) return;
-  if (!stationList.length && !streamList.length) {
+  if (!state.stationList.length && !state.streamList.length) {
     el.innerHTML = '<div style="font-size:0.75rem;color:var(--muted);text-align:center;padding:14px 0;">No stations loaded yet</div>';
     return;
   }
@@ -258,7 +269,7 @@ function renderStationSidebar() {
   // Streams take precedence over stations when both are set on a single set.
   const stationOccupants = new Map(); // stationId -> set
   const streamOccupants = new Map(); // streamId  -> set
-  const activeForOccupancy = activeSetsData.filter(s => s.state === 2 || s.state === 6);
+  const activeForOccupancy = state.activeSetsData.filter(s => s.state === 2 || s.state === 6);
   for (const s of activeForOccupancy) {
     if (s.stream?.id) streamOccupants.set(String(s.stream.id), s);
     else if (s.station?.id) stationOccupants.set(String(s.station.id), s);
@@ -267,7 +278,7 @@ function renderStationSidebar() {
   const rows = [];
 
   // Streams first (ranked higher visually)
-  for (const stream of streamList) {
+  for (const stream of state.streamList) {
     const occupant = streamOccupants.get(String(stream.id));
     if (occupant) {
       const a = occupant.slots[0]?.entrant?.name || '?';
@@ -296,7 +307,7 @@ function renderStationSidebar() {
   // which are tracked under their stream's row above and shouldn't appear
   // as standalone station entries.
   const placeholderIds = getPlaceholderStationIds();
-  const sortedStations = stationList
+  const sortedStations = state.stationList
     .filter(s => !placeholderIds.has(String(s.id)))
     .slice()
     .sort((a, b) => a.number - b.number);
@@ -330,7 +341,7 @@ function renderStationSidebar() {
 }
 
 // Expose to window
-Object.assign(window, {
+export { 
   formatWait,
   fetchManualSets,
   renderManualSets,
@@ -339,4 +350,4 @@ Object.assign(window, {
   toggleHubScore,
   updateScoreUI,
   renderStationSidebar,
-});
+ };

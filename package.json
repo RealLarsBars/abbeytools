@@ -2,7 +2,7 @@
   "name": "abbeytools",
   "version": "1.0.0",
   "description": "",
-  "main": "csv-handler.js",
+  "main": "src/main.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "vite",
@@ -22,6 +22,9 @@
   },
   "homepage": "https://github.com/RealLarsBars/abbeytools#readme",
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.3.0",
+    "prettier": "^3.8.3",
     "vite": "^8.0.10"
   }
 }

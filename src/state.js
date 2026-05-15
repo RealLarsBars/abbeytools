@@ -1,56 +1,82 @@
+export const state = {
+  state.players: [], state.tagMap: new Map(), state.matchLog: [], state.pollTimer: null,
+  state.announcedSetIds: new Set(), state.completedSetIds: new Set(), state.pollLogEntries: [],
+  state.streamAnnouncedSetIds: new Set(), state.queuePingedSetIds: new Set(),
+  state.activeSetsData: [], state.pendingSetsData: [], state.allFetchedSets: [],
+  state.stationList: [], state.streamList: [], state.hubCheckins: new Set(),
+  state.recentlyAssignedLocs: new Map(), state.DQ_MINUTES: 5.5,
+  state.streamQueues: {}, state._expandedAddQueues: new Set(), state.streamEmptySince: {},
+  state._hubSlotIds: [], state.activeTimers: []
+};
+export const state = {
+  state.players: [], state.tagMap: new Map(), state.matchLog: [], state.pollTimer: null,
+  state.announcedSetIds: new Set(), state.completedSetIds: new Set(), state.pollLogEntries: [],
+  state.streamAnnouncedSetIds: new Set(), state.queuePingedSetIds: new Set(),
+  state.activeSetsData: [], state.pendingSetsData: [], state.allFetchedSets: [],
+  state.stationList: [], state.streamList: [], state.hubCheckins: new Set(),
+  state.recentlyAssignedLocs: new Map(), state.DQ_MINUTES: 5.5,
+  state.streamQueues: {}, state._expandedAddQueues: new Set(), state.streamEmptySince: {},
+  state._hubSlotIds: [], state.activeTimers: []
+};
 // ─────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────
-window.players = []; window.tagMap = new Map(); window.matchLog = []; window.pollTimer = null;
-window.announcedSetIds = new Set(); window.completedSetIds = new Set(); window.pollLogEntries = [];
+
+
 // Tracks setIds we've already pinged Discord about for stream assignments,
 // so external moves get pinged exactly once and our own moveToStream calls
 // pre-populate this to avoid double-pings on the next poll.
-window.streamAnnouncedSetIds = new Set();
+
 // Tracks setIds we've already sent a "you're in the queue" ping for, so
 // reordering or queue-state churn doesn't cause repeat pings.
-window.queuePingedSetIds = new Set();
-window.activeSetsData = []; window.pendingSetsData = []; window.allFetchedSets = [];
-window.stationList = []; window.streamList = [];
-window.hubCheckins = new Set();
-window.recentlyAssignedLocs = new Map();
-window.DQ_MINUTES = 5.5;
+
+
+
+
+
+
 
 // Stream queues — per-stream ordered list of setIds waiting to go on stream.
 // Pure client-side state (no API call until "Send to stream" promotes the head).
 // Shape: { [streamId]: [setId, setId, ...] }
-window.streamQueues = {};
+
 // Tracks which streams have their "+ Add to queue" panel expanded
-window._expandedAddQueues = new Set();
+
 // Tracks when each stream first became empty (no active occupant). Shape: { [streamId]: timestamp }
-window.streamEmptySince = {};
+
 
 function loadStreamQueues() {
   try {
     const raw = localStorage.getItem('abbey_stream_queues');
-    streamQueues = raw ? JSON.parse(raw) : {};
-    if (typeof streamQueues !== 'object' || streamQueues === null) streamQueues = {};
-  } catch { streamQueues = {}; }
+    state.streamQueues = raw ? JSON.parse(raw) : {};
+    if (typeof state.streamQueues !== 'object' || state.streamQueues === null) state.streamQueues = {};
+  } catch { state.streamQueues = {}; }
   // Pre-mark all queue entries as already-pinged so the reconciliation pass in
   // cleanStreamQueues doesn't fire Discord pings for stale entries from a
   // previous session the first time their entrants resolve.
-  for (const ids of Object.values(streamQueues)) {
-    for (const id of ids) queuePingedSetIds.add(String(id));
+  for (const ids of Object.values(state.streamQueues)) {
+    for (const id of ids) state.queuePingedSetIds.add(String(id));
   }
 }
 function saveStreamQueues() {
-  try { localStorage.setItem('abbey_stream_queues', JSON.stringify(streamQueues)); } catch { }
+  try { localStorage.setItem('abbey_stream_queues', JSON.stringify(state.streamQueues)); } catch { }
 }
 loadStreamQueues();
 
 // Stable slot ordering for hub cards — prevents layout shift
-window._hubSlotIds = [];
 
-window.$ = id => document.getElementById(id);
-window.activeTimers = [];
+
+import { resolvePlayer } from './api.js';
+export let discordOverrides = {};
+export function saveOverrides() { localStorage.setItem('abbey_discord_overrides', JSON.stringify(discordOverrides)); }
+import { resolvePlayer } from './api.js';
+export let discordOverrides = {};
+export function saveOverrides() { localStorage.setItem('abbey_discord_overrides', JSON.stringify(discordOverrides)); }
+export const $ = id => document.getElementById(id);
+
 
 function updateTimerCache() {
-  activeTimers = Array.from(document.querySelectorAll('.dq-timer-display')).map(el => ({
+  state.activeTimers = Array.from(document.querySelectorAll('.dq-timer-display')).map(el => ({
     el,
     callTime: parseInt(el.dataset.time, 10)
   })).filter(t => t.callTime);
@@ -63,7 +89,7 @@ function getEventField() {
 }
 
 function getLowestIncompletePhase() {
-  return Math.min(999, ...allFetchedSets.filter(s => [1, 2, 6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
+  return Math.min(999, ...state.state.allFetchedSets.filter(s => [1, 2, 6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
 }
 
 function getDiscordMention(playerName) {
@@ -74,15 +100,15 @@ function getDiscordMention(playerName) {
 }
 
 try {
-  hubCheckins = new Set(JSON.parse(localStorage.getItem('abbey_checkins') || '[]'));
-} catch (e) { hubCheckins = new Set(); }
+  state.hubCheckins = new Set(JSON.parse(localStorage.getItem('abbey_checkins') || '[]'));
+} catch (e) { state.hubCheckins = new Set(); }
 
 function saveCheckins() {
-  localStorage.setItem('abbey_checkins', JSON.stringify([...hubCheckins]));
+  localStorage.setItem('abbey_checkins', JSON.stringify([...state.hubCheckins]));
 }
 
 // Expose to window
-Object.assign(window, {
+export { 
   loadStreamQueues,
   saveStreamQueues,
   updateTimerCache,
@@ -90,4 +116,4 @@ Object.assign(window, {
   getLowestIncompletePhase,
   getDiscordMention,
   saveCheckins,
-});
+ };

@@ -1,3 +1,9 @@
+import { fetchManualSets } from './manual.js';
+import { startPolling, stopPolling } from './poll.js';
+import { loadPhaseGroups } from './api.js';
+import { toast } from './hub.js';
+import { state } from './state.js';
+
 // ─────────────────────────────────────────────────────────────
 // Setup accordion
 // ─────────────────────────────────────────────────────────────
@@ -13,10 +19,10 @@ function toggleSetup(forceCollapse = null) {
 // DQ timer
 // ─────────────────────────────────────────────────────────────
 setInterval(() => {
-  if (!activeTimers.length) return;
+  if (!state.activeTimers.length) return;
   const nowSec = Math.floor(Date.now() / 1000);
-  activeTimers.forEach(({ el, callTime }) => {
-    const remaining = Math.max(0, (DQ_MINUTES * 60) - (nowSec - callTime));
+  state.activeTimers.forEach(({ el, callTime }) => {
+    const remaining = Math.max(0, (state.DQ_MINUTES * 60) - (nowSec - callTime));
     const m = Math.floor(remaining / 60), s = Math.floor(remaining % 60).toString().padStart(2, '0');
     el.textContent = `${m}:${s}`;
     if (remaining === 0) el.style.color = 'var(--accent2)';
@@ -66,7 +72,7 @@ function renderHubChips() {
 }
 
 function hubToggleWatch() {
-  if (pollTimer) { stopPolling(); }
+  if (state.pollTimer) { stopPolling(); }
   else {
     const activeTab = document.querySelector('.tab-panel.active')?.id?.replace('tab-', '') || 'hub';
     switchTab('auto'); startPolling(); switchTab(activeTab);
@@ -77,7 +83,7 @@ function updateHubWatchBtn() {
   for (const id of ['hubWatchBtn', 'streamWatchBtn']) {
     const btn = document.getElementById(id);
     if (!btn) continue;
-    if (pollTimer) {
+    if (state.pollTimer) {
       btn.textContent = '■ Stop Watching';
       btn.style.background = 'var(--accent2)';
       btn.style.borderColor = 'var(--accent2)';
@@ -129,7 +135,7 @@ function saveSettings() {
   if (dqTimer) {
     const dqVal = parseFloat(dqTimer.value) || 5.5;
     localStorage.setItem('abbey_dq_timer', String(dqVal));
-    DQ_MINUTES = dqVal;
+    state.DQ_MINUTES = dqVal;
   }
 
   const pgChecked = [...document.querySelectorAll('#phaseGroupCheckboxes button[data-pg-id]')].filter(b => b.style.color === 'var(--accent)' || b.style.background.includes('229')).map(b => b.dataset.pgId);
@@ -161,7 +167,7 @@ function loadSettings() {
   if (savedDq) {
     const dqInput = document.getElementById('dqTimerInput');
     if (dqInput) dqInput.value = savedDq;
-    DQ_MINUTES = parseFloat(savedDq) || 5.5;
+    state.DQ_MINUTES = parseFloat(savedDq) || 5.5;
   }
 
   if (get('abbey_sgg_event')) {
@@ -203,7 +209,7 @@ function switchTab(name) {
 
 // ─────────────────────────────────────────────────────────────
 // Expose to window
-Object.assign(window, {
+export { 
   toggleSetup,
   renderHubChips,
   hubToggleWatch,
@@ -214,4 +220,4 @@ Object.assign(window, {
   showStatus,
   updateFilterBar,
   switchTab,
-});
+ };

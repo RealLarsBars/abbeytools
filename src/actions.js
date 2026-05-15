@@ -1,3 +1,10 @@
+import { fetchManualSets } from './manual.js';
+import { renderLog, toast } from './hub.js';
+import { sggQuery } from './api.js';
+import { getPlaceholderStationIds } from './queue.js';
+import { buildStreamMovePing, sendWebhook } from './discord.js';
+import { saveCheckins, getDiscordMention, state } from './state.js';
+
 // Actions
 // ─────────────────────────────────────────────────────────────
 async function markInProgressQuick(setId, silent = false) {
@@ -76,11 +83,11 @@ function requestDQ(setId, winnerId, loserId, winnerName, loserName) {
 
 // ─── Hub Timer-Expired: lets TO choose who to DQ when neither/one checked in ───
 function requestHubDQ(setId) {
-  const set = activeSetsData.find(s => String(s.id) === String(setId)) || pendingSetsData.find(s => String(s.id) === String(setId));
+  const set = state.activeSetsData.find(s => String(s.id) === String(setId)) || state.pendingSetsData.find(s => String(s.id) === String(setId));
   if (!set) { toast('Set not found', true); return; }
   const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
   const nA = set.slots[0]?.entrant?.name || 'Player 1', nB = set.slots[1]?.entrant?.name || 'Player 2';
-  const hasA = hubCheckins.has(`${set.id}-${idA}`), hasB = hubCheckins.has(`${set.id}-${idB}`);
+  const hasA = state.hubCheckins.has(`${set.id}-${idA}`), hasB = state.hubCheckins.has(`${set.id}-${idB}`);
 
   // Build button list — TO always gets to choose, no automatic seed-based pick.
   const buttons = [
@@ -104,7 +111,7 @@ function requestHubDQ(setId) {
   if (hasA && hasB) {
     buttons.push({
       label: 'Start the set',
-      sublabel: 'Both players checked in',
+      sublabel: 'Both state.players checked in',
       variant: 'primary',
       icon: '▶️',
       onClick: () => markInProgressQuick(set.id),
@@ -115,7 +122,7 @@ function requestHubDQ(setId) {
   if (!hasA && !hasB) context = '<strong style="color:var(--accent2)">Neither player checked in.</strong> Choose who to DQ.';
   else if (!hasA) context = `<strong>${nA}</strong> is missing. <strong>${nB}</strong> is checked in.`;
   else if (!hasB) context = `<strong>${nB}</strong> is missing. <strong>${nA}</strong> is checked in.`;
-  else context = 'Both players are checked in. You can DQ someone manually or start the set.';
+  else context = 'Both state.players are checked in. You can DQ someone manually or start the set.';
 
   showConfirmModal({
     title: '⏱ Timer Expired',
@@ -129,7 +136,7 @@ function requestHubDQ(setId) {
 // Move to Stream — with confirmation modal
 // ─────────────────────────────────────────────────────────────
 async function moveToStream(setId, streamId, streamName) {
-  const set = activeSetsData.find(s => String(s.id) === String(setId)) || allFetchedSets.find(s => String(s.id) === String(setId));
+  const set = state.activeSetsData.find(s => String(s.id) === String(setId)) || state.allFetchedSets.find(s => String(s.id) === String(setId));
   if (!set) { toast('Set not found', true); return; }
 
   // Track the freed station (if any) so the venue dashboard can immediately
@@ -138,7 +145,7 @@ async function moveToStream(setId, streamId, streamName) {
 
   // Mark this assignment as already announced — the next poll will see the
   // stream assignment in start.gg's data and we don't want to double-ping.
-  streamAnnouncedSetIds.add(String(setId));
+  state.streamAnnouncedSetIds.add(String(setId));
 
   try {
     await sggQuery(`mutation { assignStream(setId: "${setId}", streamId: "${streamId}") { id } }`);
@@ -148,9 +155,9 @@ async function moveToStream(setId, streamId, streamName) {
     set.stream = { id: streamId, streamName: streamName };
 
     // Lock the new stream so it doesn't double-book
-    recentlyAssignedLocs.set(String(streamId), Date.now());
+    state.recentlyAssignedLocs.set(String(streamId), Date.now());
     // Free the previously locked station (if any)
-    if (previousStationId) recentlyAssignedLocs.delete(String(previousStationId));
+    if (previousStationId) state.recentlyAssignedLocs.delete(String(previousStationId));
 
     const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
     const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
@@ -167,14 +174,14 @@ async function moveToStream(setId, streamId, streamName) {
   } catch (e) {
     // Roll back the optimistic announce-marker so a future successful
     // assignment (manual retry or external) can still ping.
-    streamAnnouncedSetIds.delete(String(setId));
+    state.streamAnnouncedSetIds.delete(String(setId));
     toast(`✗ Move to stream failed: ${e.message}`, true);
     addPollLog(`⚠️ moveToStream(${setId} → ${streamId}) failed: ${e.message}`, 'err');
   }
 }
 
 function requestMoveToStream(setId, streamId, streamName) {
-  const set = activeSetsData.find(s => String(s.id) === String(setId)) || allFetchedSets.find(s => String(s.id) === String(setId));
+  const set = state.activeSetsData.find(s => String(s.id) === String(setId)) || state.allFetchedSets.find(s => String(s.id) === String(setId));
   if (!set) { toast('Set not found', true); return; }
 
   const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
@@ -183,7 +190,7 @@ function requestMoveToStream(setId, streamId, streamName) {
   showConfirmModal({
     title: '📺 Move to Stream',
     message: `Move <strong>${nA} vs ${nB}</strong> to <strong>${streamName}</strong>?` +
-      (fromStation ? `<br><br>This will free up <strong>${fromStation}</strong> and ping the players in Discord.`
+      (fromStation ? `<br><br>This will free up <strong>${fromStation}</strong> and ping the state.players in Discord.`
         : '<br><br>Players will be pinged in Discord with the new location.'),
     variant: 'info',
     buttons: [
@@ -200,7 +207,7 @@ function requestMoveToStream(setId, streamId, streamName) {
 
 // ─── Pull from stream: removes a set from a stream slot (sends back to station) ───
 async function pullFromStream(setId) {
-  const set = activeSetsData.find(s => String(s.id) === String(setId));
+  const set = state.activeSetsData.find(s => String(s.id) === String(setId));
   if (!set) { toast('Set not found', true); return; }
   const streamName = set.stream?.streamName || 'stream';
 
@@ -220,14 +227,14 @@ async function pullFromStream(setId) {
             // approach is to re-call assignStation, which moves it back.
             if (set.station?.id) {
               await sggQuery(`mutation { assignStation(setId: "${setId}", stationId: "${set.station.id}") { id } }`);
-              recentlyAssignedLocs.set(String(set.station.id), Date.now());
+              state.recentlyAssignedLocs.set(String(set.station.id), Date.now());
             }
             // Locally clear stream
             const oldStreamId = set.stream?.id;
             set.stream = null;
-            if (oldStreamId) recentlyAssignedLocs.delete(String(oldStreamId));
+            if (oldStreamId) state.recentlyAssignedLocs.delete(String(oldStreamId));
             // Allow this set to be re-announced if it gets put back on stream later
-            streamAnnouncedSetIds.delete(String(setId));
+            state.streamAnnouncedSetIds.delete(String(setId));
             toast('⏏ Pulled from stream');
             addPollLog(`⏏ Pulled set ${setId} from stream`, 'new');
             fetchManualSets();
@@ -241,19 +248,19 @@ async function pullFromStream(setId) {
 }
 
 async function submitDQ(setId, winnerId, loserId, winnerName, auto = false) {
-  if (completedSetIds.has(String(setId))) return;
-  completedSetIds.add(String(setId));
+  if (state.completedSetIds.has(String(setId))) return;
+  state.completedSetIds.add(String(setId));
   try {
     await sggQuery(`mutation DQSet { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", isDQ: true) { id state } }`);
-    announcedSetIds.delete(String(setId));
-    hubCheckins.delete(`${setId}-${winnerId}`); hubCheckins.delete(`${setId}-${loserId}`); saveCheckins();
-    // Leave _hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
-    const entry = matchLog.find(e => e.setId === setId);
+    state.announcedSetIds.delete(String(setId));
+    state.hubCheckins.delete(`${setId}-${winnerId}`); state.hubCheckins.delete(`${setId}-${loserId}`); saveCheckins();
+    // Leave state._hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
+    const entry = state.matchLog.find(e => e.setId === setId);
     if (entry) { entry.completed = true; renderLog(); }
     addPollLog(auto ? `⚡ AUTO-DQ — ${winnerName} advances` : `✓ DQ — ${winnerName} wins`, 'err');
     toast(`✓ DQ: ${winnerName} wins`);
     await fetchManualSets();
-  } catch (e) { completedSetIds.delete(String(setId)); toast(`✗ DQ failed: ${e.message}`, true); }
+  } catch (e) { state.completedSetIds.delete(String(setId)); toast(`✗ DQ failed: ${e.message}`, true); }
 }
 
 async function reportFullScore(setId, idA, idB, nameA, nameB, prefix = "") {
@@ -268,22 +275,22 @@ async function reportFullScore(setId, idA, idB, nameA, nameB, prefix = "") {
   try {
     await sggQuery(`mutation { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", gameData: [${gameData.join(',')}]) { id state } }`);
     toast(`🏆 Reported: ${winnerName} wins!`);
-    completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
-    hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
-    // Leave _hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
-    const entry = matchLog.find(e => e.setId === setId);
+    state.completedSetIds.add(String(setId)); state.announcedSetIds.delete(String(setId));
+    state.hubCheckins.delete(`${setId}-${idA}`); state.hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
+    // Leave state._hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
+    const entry = state.matchLog.find(e => e.setId === setId);
     if (entry) { entry.completed = true; renderLog(); }
     fetchManualSets();
   } catch (e) { toast(`✗ ${e.message}`, true); }
 }
 
 async function enforceAutoDQManual(setId) {
-  const set = activeSetsData.find(s => String(s.id) === String(setId)) || pendingSetsData.find(s => String(s.id) === String(setId));
+  const set = state.activeSetsData.find(s => String(s.id) === String(setId)) || state.pendingSetsData.find(s => String(s.id) === String(setId));
   if (!set) return;
   const idA = set.slots[0]?.entrant?.id, idB = set.slots[1]?.entrant?.id;
   const nA = set.slots[0]?.entrant?.name || 'Player 1', nB = set.slots[1]?.entrant?.name || 'Player 2';
   const seedA = set.slots[0]?.seed?.seedNum || 9999, seedB = set.slots[1]?.seed?.seedNum || 9999;
-  const hasA = hubCheckins.has(`${set.id}-${idA}`), hasB = hubCheckins.has(`${set.id}-${idB}`);
+  const hasA = state.hubCheckins.has(`${set.id}-${idA}`), hasB = state.hubCheckins.has(`${set.id}-${idB}`);
   let winId, loseId, winName;
   if (!hasA && !hasB) {
     if (seedA > seedB) { winId = idB; loseId = idA; winName = nB; }
@@ -299,14 +306,14 @@ async function enforceAutoDQManual(setId) {
 // ─────────────────────────────────────────────────────────────
 function addPollLog(msg, type = '') {
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  pollLogEntries.unshift({ time, msg, type });
-  if (pollLogEntries.length > 200) pollLogEntries.pop();
+  state.pollLogEntries.unshift({ time, msg, type });
+  if (state.pollLogEntries.length > 200) state.pollLogEntries.pop();
   const el = document.getElementById('pollLog');
-  if (el) el.innerHTML = pollLogEntries.map(e => `<div class="entry ${e.type}">[${e.time}] ${e.msg}</div>`).join('');
+  if (el) el.innerHTML = state.pollLogEntries.map(e => `<div class="entry ${e.type}">[${e.time}] ${e.msg}</div>`).join('');
 }
 
 function copyPollLog() {
-  const text = pollLogEntries.map(e => `[${e.time}] ${e.msg}`).join('\n');
+  const text = state.pollLogEntries.map(e => `[${e.time}] ${e.msg}`).join('\n');
   navigator.clipboard.writeText(text).then(() => toast('Log copied to clipboard!'));
 }
 
@@ -315,8 +322,8 @@ function copyPollLog() {
 // the last `|`. Returns '???' for empty/missing names.
 function compactName(name) {
   if (!name) return '???';
-  const player = (typeof tagMap !== 'undefined' && tagMap.get)
-    ? tagMap.get(String(name).toLowerCase())
+  const player = (typeof state.tagMap !== 'undefined' && state.tagMap.get)
+    ? state.tagMap.get(String(name).toLowerCase())
     : null;
   if (player?.shortTag) return player.shortTag;
   const parts = String(name).split('|').map(s => s.trim()).filter(Boolean);
@@ -349,13 +356,13 @@ function buildPollSnapshot(allSets, freeLocs) {
   const active = allSets.filter(s => s.state === 2 || s.state === 6);
 
   // 🎬 Per-stream view: who's live and what's queued
-  const streamParts = streamList.map(stream => {
+  const streamParts = state.state.state.streamList.map(stream => {
     const sid = String(stream.id);
     const live = active.filter(s => String(s.stream?.id) === sid);
     const liveLabel = live.length
       ? live.map(s => `${s.state === 2 ? '▶' : '⏸'}${compactSet(s)}`).join(',')
       : '—';
-    const queue = streamQueues[sid] || [];
+    const queue = state.streamQueues[sid] || [];
     const queueLabel = queue.length
       ? queue.map(setId => compactSet(allSets.find(x => String(x.id) === String(setId)))).join(',')
       : '—';
@@ -383,8 +390,8 @@ function buildPollSnapshot(allSets, freeLocs) {
   const stationsLine = `🏟 ${occupied || '—'} (free:${freeStnNums.join(',') || 'none'})`;
 
   // 🧠 Tracking-set sizes — useful for spotting stuck/leaked entries
-  const totalQueued = Object.values(streamQueues).reduce((n, q) => n + (q?.length || 0), 0);
-  const trackedLine = `🧠 announced=${announcedSetIds.size} streamCalled=${streamAnnouncedSetIds.size} queuePinged=${queuePingedSetIds.size} inQueues=${totalQueued} completed=${completedSetIds.size}`;
+  const totalQueued = Object.values(state.streamQueues).reduce((n, q) => n + (q?.length || 0), 0);
+  const trackedLine = `🧠 announced=${state.announcedSetIds.size} streamCalled=${state.streamAnnouncedSetIds.size} queuePinged=${state.queuePingedSetIds.size} inQueues=${totalQueued} completed=${state.completedSetIds.size}`;
 
   return [streamsLine, stationsLine, trackedLine];
 }
@@ -399,7 +406,7 @@ function updateVenueDashboardUI(allSets) {
     ...stationList
       .filter(s => !placeholderIds.has(String(s.id)))
       .map(s => ({ id: s.id, type: 'station', label: `Station ${s.number}`, sortIdx: s.number })),
-    ...streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
+    ...state.state.streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
   ];
   const activeSets = allSets.filter(s => (s.state === 2 || s.state === 6) && (s.station || s.stream));
 
@@ -418,11 +425,11 @@ function updateVenueDashboardUI(allSets) {
 
   // Shield recently assigned locations from being double-booked by stale API responses
   const now = Date.now();
-  for (const [locId, timestamp] of recentlyAssignedLocs.entries()) {
+  for (const [locId, timestamp] of state.recentlyAssignedLocs.entries()) {
     if (now - timestamp < 180000) { // 3 minutes protection
       busyIds.add(String(locId));
     } else {
-      recentlyAssignedLocs.delete(locId); // cleanup old locks
+      state.recentlyAssignedLocs.delete(locId); // cleanup old locks
     }
   }
 
@@ -444,7 +451,7 @@ function updateVenueDashboardUI(allSets) {
 }
 
 // Expose to window
-Object.assign(window, {
+export { 
   markInProgressQuick,
   showConfirmModal,
   closeConfirmModal,
@@ -462,4 +469,4 @@ Object.assign(window, {
   compactSet,
   buildPollSnapshot,
   updateVenueDashboardUI,
-});
+ };

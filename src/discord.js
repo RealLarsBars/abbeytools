@@ -233,7 +233,7 @@ function buildStreamMovePing(args) { return buildStreamCallPing(args); }
 
 // ─────────────────────────────────────────────────────────────
 // Expose to window
-Object.assign(window, {
+export { 
   sendWebhook,
   buildNormalCallPing,
   buildNormalQueuePing,
@@ -252,4 +252,4 @@ Object.assign(window, {
   buildRerouteToQueuePing,
   buildStreamCallPing,
   buildStreamMovePing,
-});
+ };

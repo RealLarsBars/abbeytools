@@ -1,3 +1,8 @@
+import { saveSettings, toggleSetup, updateFilterBar, renderHubChips, showStatus } from './ui.js';
+import { getEventField, $, state } from './state.js';
+import { renderStreamPriorityPicker, renderStreamSetupSelectors, renderPriorityStreamSelector } from './streams.js';
+import { toast } from './hub.js';
+
 // API
 // ─────────────────────────────────────────────────────────────
 async function sggQuery(query) {
@@ -93,8 +98,8 @@ async function loadPhaseGroups() {
     }`);
     const tourney = data?.data?.event?.tournament;
     if (tourney) {
-      streamList = tourney.streams || [];
-      stationList = (tourney.stations?.nodes || []).sort((a, b) => a.number - b.number);
+      state.streamList = tourney.streams || [];
+      state.stationList = (tourney.stations?.nodes || []).sort((a, b) => a.number - b.number);
     }
     const phases = data?.data?.event?.phases || [];
     const savedFilter = localStorage.getItem('abbey_pg_filter') || '';
@@ -145,21 +150,21 @@ async function loadPhaseGroups() {
 function resolvePlayer(entrantName) {
   if (!entrantName) return null;
   const lower = entrantName.toLowerCase().trim();
-  if (tagMap.has(lower)) return tagMap.get(lower);
+  if (state.tagMap.has(lower)) return state.tagMap.get(lower);
   // normalize spaces around pipe: 'NSB  |  KXT' -> 'nsb | kxt'
   const normalized = lower.replace(/\s*\|\s*/g, ' | ');
-  if (tagMap.has(normalized)) return tagMap.get(normalized);
+  if (state.tagMap.has(normalized)) return state.tagMap.get(normalized);
   const stripped = entrantName.replace(/^[^|]+\|\s*/, '').trim().toLowerCase();
-  if (stripped && tagMap.has(stripped)) return tagMap.get(stripped);
+  if (stripped && state.tagMap.has(stripped)) return state.tagMap.get(stripped);
   return null;
 }
 
 // ─────────────────────────────────────────────────────────────
 // Expose to window
-Object.assign(window, {
+export { 
   sggQuery,
   browseEvents,
   selectEvent,
   loadPhaseGroups,
   resolvePlayer,
-});
+ };

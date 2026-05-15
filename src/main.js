@@ -1,3 +1,7 @@
+import { renderLog } from './hub.js';
+import { loadSettings } from './ui.js';
+import { state } from './state.js';
+
 import './state.js';
 import './ui.js';
 import './api.js';
@@ -8,7 +12,7 @@ import './poll.js';
 import './manual.js';
 import './queue.js';
 import './hub.js';
-
+import './csv-handler.js';
 
 // (initDropZone moved to csv-handler.js)
 
@@ -17,11 +21,11 @@ try { loadSettings(); } catch (e) { console.error('loadSettings failed:', e); }
 try {
   const savedMap = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}');
   for (const [tag, id] of Object.entries(savedMap)) {
-    if (!tagMap.has(tag)) {
+    if (!state.tagMap.has(tag)) {
       const p = { tag, shortTag: tag, discordId: id };
-      tagMap.set(tag, p);
+      state.tagMap.set(tag, p);
     } else {
-      tagMap.get(tag).discordId = id;
+      state.tagMap.get(tag).discordId = id;
     }
   }
 } catch (e) { }

@@ -1,3 +1,12 @@
+import { _scoreKbdBuffer, _scoreKbdTimer } from './manual.js';
+import { discordOverrides, saveOverrides } from './state.js';
+import { saveStreamQueues, updateTimerCache, state, saveCheckins } from './state.js';
+import { renderStationSidebar, fetchManualSets } from './manual.js';
+import { streamGrade } from './streams.js';
+import { sggQuery } from './api.js';
+import { callQueuedSetToStream, findQueueAssignment, renderStreamQueue } from './queue.js';
+import { addPollLog } from './actions.js';
+
 // Player Hub — stable fixed-size card grid
 // ─────────────────────────────────────────────────────────────
 function renderPlayerHub() {
@@ -9,16 +18,16 @@ function renderPlayerHub() {
   renderStationSidebar();
   renderStreamQueue();
 
-  const actionSets = activeSetsData.filter(s => s.state === 2 || s.state === 6);
+  const actionSets = state.activeSetsData.filter(s => s.state === 2 || s.state === 6);
   const currentIds = actionSets.map(s => String(s.id));
-  currentIds.forEach(id => { if (!_hubSlotIds.includes(id)) _hubSlotIds.push(id); });
+  currentIds.forEach(id => { if (!state._hubSlotIds.includes(id)) state._hubSlotIds.push(id); });
   // Never prune here — pruning happens once per poll cycle in doPoll so stale
   // slots hold their position as dashed placeholders across ALL renders that
   // fire between polls (e.g. score submit + auto-promote both call fetchManualSets).
 
   const CARD_H = '200px';
 
-  const cards = _hubSlotIds.map(slotId => {
+  const cards = state._hubSlotIds.map(slotId => {
     const set = actionSets.find(s => String(s.id) === slotId);
 
     if (!set) return `<div style="height:${CARD_H};background:var(--bg);border:1px dashed var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;">
@@ -33,7 +42,7 @@ function renderPlayerHub() {
     // Player-hub cards now also surface "queued for stream X" status — the player
     // is still playing on a station, but they should know they're up next on stream.
     const queueAssignment = !onStream ? findQueueAssignment(set.id) : null;
-    const queuedStream = queueAssignment ? streamList.find(s => String(s.id) === queueAssignment.streamId) : null;
+    const queuedStream = queueAssignment ? state.streamList.find(s => String(s.id) === queueAssignment.streamId) : null;
     const isQueued = !!queuedStream;
     const queuedLabel = queuedStream
       ? `🎬 QUEUED FOR ${queuedStream.streamName.toUpperCase()}${queueAssignment.position === 0 ? ' (NEXT UP)' : ` (#${queueAssignment.position + 1})`}`
@@ -46,10 +55,10 @@ function renderPlayerHub() {
     const escA = nameA.replace(/'/g, "\'"), escB = nameB.replace(/'/g, "\'");
 
     if (set.state === 6) {
-      const ciA = hubCheckins.has(`${set.id}-${a?.id}`), ciB = hubCheckins.has(`${set.id}-${b?.id}`);
+      const ciA = state.hubCheckins.has(`${set.id}-${a?.id}`), ciB = state.hubCheckins.has(`${set.id}-${b?.id}`);
       const callTime = set.updatedAt || set.createdAt || Math.floor(Date.now() / 1000);
       const nowSec = Math.floor(Date.now() / 1000);
-      const isExpired = (nowSec - callTime) / 60 >= DQ_MINUTES;
+      const isExpired = (nowSec - callTime) / 60 >= state.DQ_MINUTES;
       const autoDqOn = document.getElementById('autoDqToggle')?.checked !== false;
 
       // On-stream OR queued-for-stream sets get a blue accent so it's
@@ -128,13 +137,13 @@ function renderPlayerHub() {
 function logMatch(nameA, nameB, station, source, setId = null, seedA = null, seedB = null, shiny = false) {
   const _sc = (seedA && seedB) ? Math.abs(seedA - seedB) + (seedA + seedB) * 0.1 : 9999;
   const _gr = streamGrade(_sc);
-  matchLog.unshift({ p1: nameA, p2: nameB, station, source, setId, completed: false, grade: _gr, shiny, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+  state.matchLog.unshift({ p1: nameA, p2: nameB, station, source, setId, completed: false, grade: _gr, shiny, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
   renderLog();
 }
 
 function resetMatch(setId) {
-  announcedSetIds.delete(String(setId)); completedSetIds.delete(String(setId));
-  const entry = matchLog.find(e => e.setId === setId);
+  state.announcedSetIds.delete(String(setId)); state.completedSetIds.delete(String(setId));
+  const entry = state.matchLog.find(e => e.setId === setId);
   if (entry) entry.completed = false;
   renderLog();
   addPollLog(`↩ Reset set ${setId} — will re-ping on next poll`, 'new');
@@ -142,12 +151,12 @@ function resetMatch(setId) {
 }
 
 function renderLog() {
-  const el = document.getElementById('matchLog');
-  if (!matchLog.length) { el.innerHTML = '<div class="empty-log">No matches called yet.</div>'; return; }
-  el.innerHTML = matchLog.map(e => `
+  const el = document.getElementById('state.matchLog');
+  if (!state.matchLog.length) { el.innerHTML = '<div class="empty-log">No matches called yet.</div>'; return; }
+  el.innerHTML = state.matchLog.map(e => `
     <div class="match-entry ${e.source === 'auto' ? 'auto' : ''} ${e.completed ? 'done' : ''}">
       <div style="flex:1;min-width:0;">
-        <div class="players">${e.p1} <span style="color:var(--muted)">vs</span> ${e.p2}${e.shiny ? ' <span class="shiny-badge">✨ SHINY</span>' : ''}</div>
+        <div class="state.players">${e.p1} <span style="color:var(--muted)">vs</span> ${e.p2}${e.shiny ? ' <span class="shiny-badge">✨ SHINY</span>' : ''}</div>
         <div class="meta">${e.time} · ${e.source === 'auto' ? '⚡ auto' : '🖐 manual'}${e.grade ? ' &middot; ' + e.grade : ''}${e.completed ? ' · <span style="color:var(--accent)">✓ done</span>' : ''}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
@@ -167,9 +176,9 @@ function toast(msg, err = false) {
 // ─────────────────────────────────────────────────────────────
 // Score Overlay — button-based score picker
 // ─────────────────────────────────────────────────────────────
-window._overlaySetId = null; window._overlayIdA = null; window._overlayIdB = null;
-window._overlayNameA = ''; window._overlayNameB = '';
-window._overlayScoreA = null; window._overlayScoreB = null;
+export let _overlaySetId = null; let _overlayIdA = null; let _overlayIdB = null;
+export let _overlayNameA = ''; export let _overlayNameB = '';
+export let _overlayScoreA = null; export let _overlayScoreB = null;
 
 function openScoreOverlay(setId, idA, idB, nameA, nameB, loc) {
   _overlaySetId = setId; _overlayIdA = idA; _overlayIdB = idB;
@@ -247,8 +256,8 @@ async function submitOverlayScore() {
   // call reportBracketSet, the set is gone and we can't look it up to figure
   // out where to auto-call from. We use this to auto-promote the next queued
   // match for that stream after the score lands.
-  const setBeingReported = activeSetsData.find(s => String(s.id) === String(setId)) ||
-    allFetchedSets.find(s => String(s.id) === String(setId));
+  const setBeingReported = state.activeSetsData.find(s => String(s.id) === String(setId)) ||
+    state.allFetchedSets.find(s => String(s.id) === String(setId));
   const reportedStreamId = setBeingReported?.stream?.id ? String(setBeingReported.stream.id) : null;
 
   const winnerId = sA > sB ? idA : idB;
@@ -259,11 +268,11 @@ async function submitOverlayScore() {
   try {
     await sggQuery(`mutation { reportBracketSet(setId: "${setId}", winnerId: "${winnerId}", gameData: [${gameData.join(',')}]) { id state } }`);
     toast(`🏆 Reported: ${winnerName} wins!`);
-    completedSetIds.add(String(setId)); announcedSetIds.delete(String(setId));
-    streamAnnouncedSetIds.delete(String(setId));
-    hubCheckins.delete(`${setId}-${idA}`); hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
-    // Leave _hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
-    const entry = matchLog.find(e => e.setId === setId);
+    state.completedSetIds.add(String(setId)); state.announcedSetIds.delete(String(setId));
+    state.streamAnnouncedSetIds.delete(String(setId));
+    state.hubCheckins.delete(`${setId}-${idA}`); state.hubCheckins.delete(`${setId}-${idB}`); saveCheckins();
+    // Leave state._hubSlotIds intact — card holds its position and shows a dashed placeholder until next poll
+    const entry = state.matchLog.find(e => e.setId === setId);
     if (entry) { entry.completed = true; renderLog(); }
 
     // Auto-call the next queued match for this stream, if any.
@@ -273,16 +282,16 @@ async function submitOverlayScore() {
     // Gated by the "Autocall next from queue" toggle.
     const autoQueueCallOnAfterScore = document.getElementById('autoQueueCallToggle')?.checked !== false;
     if (reportedStreamId && autoQueueCallOnAfterScore) {
-      const nextSetId = (streamQueues[reportedStreamId] || [])[0];
+      const nextSetId = (state.streamQueues[reportedStreamId] || [])[0];
       if (nextSetId) {
-        const stream = streamList.find(s => String(s.id) === reportedStreamId);
-        const nextSet = activeSetsData.find(s => String(s.id) === String(nextSetId)) ||
-          pendingSetsData.find(s => String(s.id) === String(nextSetId)) ||
-          allFetchedSets.find(s => String(s.id) === String(nextSetId));
+        const stream = state.streamList.find(s => String(s.id) === reportedStreamId);
+        const nextSet = state.activeSetsData.find(s => String(s.id) === String(nextSetId)) ||
+          state.pendingSetsData.find(s => String(s.id) === String(nextSetId)) ||
+          state.allFetchedSets.find(s => String(s.id) === String(nextSetId));
         const nextFilled = !!(nextSet?.slots?.[0]?.entrant?.name && nextSet?.slots?.[1]?.entrant?.name);
         if (stream && nextSet && nextFilled) {
           // Drop from queue first so re-renders don't show it twice
-          streamQueues[reportedStreamId] = streamQueues[reportedStreamId].filter(x => String(x) !== String(nextSetId));
+          state.streamQueues[reportedStreamId] = state.streamQueues[reportedStreamId].filter(x => String(x) !== String(nextSetId));
           saveStreamQueues();
           addPollLog(`🎬 Auto-promoting next queued match → ${stream.streamName} (after score report)`, 'new');
           // Don't await — let it run while we refresh data, so the UI stays snappy
@@ -303,18 +312,18 @@ async function submitOverlayScore() {
 function renderDiscordAccountsList() {
   const el = document.getElementById('discordLinkedList');
   if (!el) return;
-  if (!players.length) {
+  if (!state.players.length) {
     el.innerHTML = '<span style="font-size:0.82rem;color:var(--muted);">Load an attendee CSV above to see linked accounts.</span>';
     return;
   }
-  const linked = players.filter(p => p.discordId);
-  const unlinked = players.filter(p => !p.discordId);
+  const linked = state.players.filter(p => p.discordId);
+  const unlinked = state.players.filter(p => !p.discordId);
   let html = '';
 
   if (linked.length) {
     html += `<div style="margin-bottom:8px;font-size:0.68rem;font-family:'Space Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:var(--accent);">${linked.length} linked</div>`;
     linked.forEach(p => {
-      const pi = players.indexOf(p);
+      const pi = state.players.indexOf(p);
       html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(0,229,160,0.05);border:1px solid rgba(0,229,160,0.2);border-radius:7px;margin-bottom:4px;">
         <span style="flex:1;font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.tag.replace(/</g,'&lt;')}</span>
         <span style="font-family:'Space Mono',monospace;font-size:0.68rem;color:var(--muted);flex-shrink:0;">${p.discordId}</span>
@@ -327,7 +336,7 @@ function renderDiscordAccountsList() {
     html += `<details style="margin-top:${linked.length ? '12' : '0'}px;">
       <summary style="font-size:0.72rem;font-family:'Space Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:var(--muted);cursor:pointer;margin-bottom:8px;user-select:none;">${unlinked.length} not linked &#x2014; expand to link manually</summary>`;
     unlinked.forEach(p => {
-      const pi = players.indexOf(p);
+      const pi = state.players.indexOf(p);
       html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:7px;margin-bottom:4px;">
         <span style="flex:1;font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.tag.replace(/</g,'&lt;')}</span>
         <input id="ml-p${pi}" type="text" placeholder="Discord User ID" style="width:140px;font-size:0.72rem;padding:4px 8px;flex-shrink:0;" autocomplete="off">
@@ -338,14 +347,14 @@ function renderDiscordAccountsList() {
   }
 
   if (!linked.length && !unlinked.length) {
-    html = '<span style="font-size:0.82rem;color:var(--muted);">No players in CSV.</span>';
+    html = '<span style="font-size:0.82rem;color:var(--muted);">No state.players in CSV.</span>';
   }
 
   el.innerHTML = html;
 }
 
 function manualLinkPlayer(playerIdx) {
-  const p = players[playerIdx];
+  const p = state.players[playerIdx];
   if (!p) return;
   const input = document.getElementById('ml-p' + playerIdx);
   const id = input?.value.trim().replace(/\D/g, '');
@@ -353,7 +362,7 @@ function manualLinkPlayer(playerIdx) {
   discordOverrides[p.tag.toLowerCase()] = id;
   saveOverrides();
   try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); m[p.tag.toLowerCase()] = id; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { }
-  const player = tagMap.get(p.tag.toLowerCase());
+  const player = state.tagMap.get(p.tag.toLowerCase());
   if (player) player.discordId = id;
   p.discordId = id;
   renderDiscordAccountsList();
@@ -361,12 +370,12 @@ function manualLinkPlayer(playerIdx) {
 }
 
 function unlinkPlayer(playerIdx) {
-  const p = players[playerIdx];
+  const p = state.players[playerIdx];
   if (!p) return;
   delete discordOverrides[p.tag.toLowerCase()];
   saveOverrides();
   try { const m = JSON.parse(localStorage.getItem('abbey_discord_map') || '{}'); delete m[p.tag.toLowerCase()]; localStorage.setItem('abbey_discord_map', JSON.stringify(m)); } catch (e) { }
-  const player = tagMap.get(p.tag.toLowerCase());
+  const player = state.tagMap.get(p.tag.toLowerCase());
   if (player) player.discordId = '';
   p.discordId = '';
   renderDiscordAccountsList();
@@ -375,7 +384,7 @@ function unlinkPlayer(playerIdx) {
 
 // --- WordPress compatibility shim ---
 // Expose to window
-Object.assign(window, {
+export { 
   renderPlayerHub,
   logMatch,
   resetMatch,
@@ -389,4 +398,4 @@ Object.assign(window, {
   renderDiscordAccountsList,
   manualLinkPlayer,
   unlinkPlayer,
-});
+ };
