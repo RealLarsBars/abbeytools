@@ -186,7 +186,7 @@ async function toggleHubCheckin(setId, entrantId, name) {
 // ─────────────────────────────────────────────────────────────
 // Keyboard shortcut: "32Enter" fills scores and submits
 // ─────────────────────────────────────────────────────────────
-export export let _scoreKbdBuffer = ''; export export let _scoreKbdTimer = null;
+export let _scoreKbdBuffer = ''; export let _scoreKbdTimer = null;
 export function setScoreKbdBuffer(val) { _scoreKbdBuffer = val; }
 export function setScoreKbdTimer(val) { _scoreKbdTimer = val; }
 

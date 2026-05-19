@@ -1,4 +1,4 @@
-import { _scoreKbdBuffer, _scoreKbdTimer } from './manual.js';
+import { setScoreKbdBuffer } from './manual.js';
 import { discordOverrides, saveOverrides } from './state.js';
 import { saveStreamQueues, updateTimerCache, state, saveCheckins } from './state.js';
 import { renderStationSidebar, fetchManualSets } from './manual.js';
@@ -204,7 +204,7 @@ function openScoreOverlay(setId, idA, idB, nameA, nameB, loc) {
   submitBtn.style.opacity = '0.4';
   submitBtn.style.pointerEvents = 'none';
   document.getElementById('scoreOverlay').style.display = 'flex';
-  _scoreKbdBuffer = '';
+  setScoreKbdBuffer('');
 }
 
 function setScore(player, value) {
@@ -224,7 +224,7 @@ function setScore(player, value) {
 
 function closeScoreOverlay() {
   document.getElementById('scoreOverlay').style.display = 'none';
-  _overlaySetId = null; _scoreKbdBuffer = '';
+  _overlaySetId = null; setScoreKbdBuffer('');
 }
 
 function updateOverlayScore() {

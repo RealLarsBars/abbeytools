@@ -356,7 +356,7 @@ function buildPollSnapshot(allSets, freeLocs) {
   const active = allSets.filter(s => s.state === 2 || s.state === 6);
 
   // 🎬 Per-stream view: who's live and what's queued
-  const streamParts = state.state.state.streamList.map(stream => {
+  const streamParts = state.streamList.map(stream => {
     const sid = String(stream.id);
     const live = active.filter(s => String(s.stream?.id) === sid);
     const liveLabel = live.length
@@ -403,10 +403,10 @@ function updateVenueDashboardUI(allSets) {
   // moved to a stream.
   const placeholderIds = getPlaceholderStationIds();
   const allLocs = [
-    ...stationList
+    ...state.stationList
       .filter(s => !placeholderIds.has(String(s.id)))
       .map(s => ({ id: s.id, type: 'station', label: `Station ${s.number}`, sortIdx: s.number })),
-    ...state.state.streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
+    ...state.streamList.map((s, i) => ({ id: s.id, type: 'stream', label: `🎥 ${s.streamName}`, sortIdx: -1000 + i }))
   ];
   const activeSets = allSets.filter(s => (s.state === 2 || s.state === 6) && (s.station || s.stream));
 

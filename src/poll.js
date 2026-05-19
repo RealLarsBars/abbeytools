@@ -41,7 +41,7 @@ async function doPoll() {
 
     state.allFetchedSets = allSets;
     state.activeSetsData = allSets.filter(s => s.state === 2 || s.state === 6);
-    state.state.state.pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
+    state.pendingSetsData = allSets.filter(s => s.state === 1 && s.slots?.[0]?.entrant?.id && s.slots?.[1]?.entrant?.id);
 
     // Prune hub slots once per poll cycle — after fresh data confirms which sets
     // are truly gone. Doing this here (not in renderPlayerHub) means any number
@@ -52,9 +52,9 @@ async function doPoll() {
     const autoOn = document.getElementById('autoAssignToggle')?.checked;
     const bypassPhase = document.getElementById('bypassPhaseToggle')?.checked;
     const lowestPhase = getLowestIncompletePhase();
-    const lockedPending = state.state.state.pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
+    const lockedPending = state.pendingSetsData.filter(s => (s.phaseGroup?.phase?.phaseOrder ?? 999) === lowestPhase);
     const usableStationCount = state.stationList.length - getPlaceholderStationIds().size;
-    addPollLog(`📊 auto:${autoOn ? "ON" : "OFF"} | bypassPhase:${bypassPhase ? "ON" : "OFF"} | total:${allSets.length} | pending:${state.state.state.pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${usableStationCount} str:${state.streamList.length}) | active:${state.activeSetsData.length}`);
+    addPollLog(`📊 auto:${autoOn ? "ON" : "OFF"} | bypassPhase:${bypassPhase ? "ON" : "OFF"} | total:${allSets.length} | pending:${state.pendingSetsData.length}(eligible:${lockedPending.length}) | free:${freeLocs.length}(stn:${usableStationCount} str:${state.streamList.length}) | active:${state.activeSetsData.length}`);
 
     // Per-cycle state snapshot: streams + queues, stations + occupants,
     // tracking-set sizes. Reflects what start.gg sent us this poll, BEFORE
@@ -160,7 +160,7 @@ async function doPoll() {
         // Nothing ever transitions directly from "external stream assignment"
         // to "live on stream" — that path only exists via callQueuedSetToStream.
         const isQueuedHere = (state.streamQueues[streamId] || []).some(x => String(x) === sid);
-        const alreadyAnnounced = state.state.state.streamAnnouncedSetIds.has(sid);
+        const alreadyAnnounced = state.streamAnnouncedSetIds.has(sid);
         if (isQueuedHere || alreadyAnnounced) continue;
 
         const wasPingedToStation = state.announcedSetIds.has(sid);
@@ -179,8 +179,8 @@ async function doPoll() {
         // Send appropriate ping. fromLoc → "plans changed" reroute ping.
         // No fromLoc → fresh queue ping (TO assigned stream out of nowhere).
         const nA = set.slots[0]?.entrant?.name || '???', nB = set.slots[1]?.entrant?.name || '???';
-        if (nA !== '???' && nB !== '???' && !state.state.state.queuePingedSetIds.has(sid)) {
-          state.state.state.queuePingedSetIds.add(sid);
+        if (nA !== '???' && nB !== '???' && !state.queuePingedSetIds.has(sid)) {
+          state.queuePingedSetIds.add(sid);
           const mA = getDiscordMention(nA), mB = getDiscordMention(nB);
           const ping = fromLoc
             ? buildRerouteToQueuePing({ mA, mB, streamLabel: stream.streamName, roundText: set.fullRoundText, fromLoc })
@@ -198,15 +198,15 @@ async function doPoll() {
         // IN-PROGRESS + STREAM ASSIGNED — set is actively being played and
         // has a stream. Two cases:
         //   1. We promoted it via callQueuedSetToStream → already in
-        //      state.state.state.streamAnnouncedSetIds, all housekeeping (placeholder station,
+        //      state.streamAnnouncedSetIds, all housekeeping (placeholder station,
         //      stream re-assign) was done at promotion time. Skip.
         //   2. TO assigned stream mid-game → unusual. Track silently as
         //      occupied (so auto-promote doesn't double up) and do the
         //      placeholder swap to free the real station, but NEVER reset
         //      state — state.players are mid-set and that would be destructive.
-        if (state.state.state.streamAnnouncedSetIds.has(sid)) continue;
+        if (state.streamAnnouncedSetIds.has(sid)) continue;
 
-        state.state.state.streamAnnouncedSetIds.add(sid);
+        state.streamAnnouncedSetIds.add(sid);
         addPollLog(`📺 Mid-game stream assignment: ${set.fullRoundText || 'Set ' + sid} → 🎥 ${stream.streamName} (no reset, no ping)`, 'new');
         const targetStnId = getPlaceholderStationForStream(streamId);
         if (targetStnId && String(set.station?.id) !== String(targetStnId)) {
@@ -271,24 +271,24 @@ async function doPoll() {
     // Drop sets from tracking sets once their stream/queue association ends —
     // so re-assigning later (after a pull or completion) pings again.
     const currentlyStreamed = new Set(allSets.filter(s => s.stream?.id && (s.state === 2 || s.state === 6)).map(s => String(s.id)));
-    for (const sid of [...state.state.streamAnnouncedSetIds]) {
-      if (!currentlyStreamed.has(sid)) state.state.state.streamAnnouncedSetIds.delete(sid);
+    for (const sid of [...state.streamAnnouncedSetIds]) {
+      if (!currentlyStreamed.has(sid)) state.streamAnnouncedSetIds.delete(sid);
     }
-    // state.state.state.queuePingedSetIds GC: drop entries no longer in any queue or live on stream.
+    // state.queuePingedSetIds GC: drop entries no longer in any queue or live on stream.
     const allQueuedAndLive = new Set([...currentlyStreamed]);
     for (const q of Object.values(state.streamQueues)) {
       for (const id of q) allQueuedAndLive.add(String(id));
     }
-    for (const sid of [...state.state.queuePingedSetIds]) {
-      if (!allQueuedAndLive.has(sid)) state.state.state.queuePingedSetIds.delete(sid);
+    for (const sid of [...state.queuePingedSetIds]) {
+      if (!allQueuedAndLive.has(sid)) state.queuePingedSetIds.delete(sid);
     }
 
     // 2. AUTO-ASSIGN — STATIONS ONLY. Streams are filled manually via the
     // Stream Queue. Auto-assign never picks streams now.
-    if (autoOn && state.state.state.pendingSetsData.length > 0 && availableStations.length > 0) {
+    if (autoOn && state.pendingSetsData.length > 0 && availableStations.length > 0) {
       const lowestIncompletePhase = getLowestIncompletePhase();
 
-      let pending = [...state.state.pendingSetsData];
+      let pending = [...state.pendingSetsData];
 
       // Phase group filter
       const pgFilterRaw = localStorage.getItem('abbey_pg_filter') || '';
@@ -309,7 +309,7 @@ async function doPoll() {
         .filter(loc => loc.type === 'station')
         .filter(loc => String(loc.id) !== mainPlaceholderId && String(loc.id) !== sidePlaceholderId);
 
-      const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (state.state.state.pendingSetsData[0] ? String(state.state.state.pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
+      const samplePgId = pending[0] ? String(pending[0].phaseGroup?.id ?? 'undefined') : (state.pendingSetsData[0] ? String(state.pendingSetsData[0].phaseGroup?.id ?? 'undefined') : 'no sets');
       addPollLog(`🔍 after-filters:${pending.length} | pgFilter:[${pgAllowed.join(',')}] | sample pgId:${samplePgId} | stns:${availableStations.length} (streams: manual queue)`);
 
       // Stream-priority sets (main-only, stream-preferred) are NEVER auto-assigned
@@ -320,7 +320,7 @@ async function doPoll() {
         .filter(s => getSetStreamTier(s) === 'normal')
         .filter(s => !isInAnyQueue(s.id))
         .filter(s => !s.stream?.id)
-        .filter(s => !state.state.state.streamAnnouncedSetIds.has(String(s.id)))
+        .filter(s => !state.streamAnnouncedSetIds.has(String(s.id)))
         .filter(s => !state.announcedSetIds.has(String(s.id)));
 
       // Sort: phase order (lower first), then oldest first
@@ -405,18 +405,18 @@ async function startPolling() {
   document.getElementById('autoMeta').textContent = 'Watching for sets called on any device…';
   document.getElementById('manualAutoBar').style.display = 'flex';
 
-  // Pre-populate state.state.state.streamAnnouncedSetIds with currently-streaming sets so that
+  // Pre-populate state.streamAnnouncedSetIds with currently-streaming sets so that
   // resuming polling after a pause doesn't spam pings for matches that have
   // been on stream for a while. New stream assignments after this point still
   // ping normally.
   for (const s of state.allFetchedSets) {
     if (s.stream?.id && (s.state === 2 || s.state === 6)) {
-      state.state.state.streamAnnouncedSetIds.add(String(s.id));
+      state.streamAnnouncedSetIds.add(String(s.id));
     }
   }
 
   // Apply the same filters as auto-assign before forcing a start.gg call
-  let validPending = state.state.state.pendingSetsData || [];
+  let validPending = state.pendingSetsData || [];
 
   // Skip queued sets — they're waiting for stream promotion, not a station call
   validPending = validPending.filter(s => !isInAnyQueue(s.id));

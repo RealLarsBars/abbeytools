@@ -1,22 +1,12 @@
 export const state = {
-  state.players: [], state.tagMap: new Map(), state.matchLog: [], state.pollTimer: null,
-  state.announcedSetIds: new Set(), state.completedSetIds: new Set(), state.pollLogEntries: [],
-  state.streamAnnouncedSetIds: new Set(), state.queuePingedSetIds: new Set(),
-  state.activeSetsData: [], state.pendingSetsData: [], state.allFetchedSets: [],
-  state.stationList: [], state.streamList: [], state.hubCheckins: new Set(),
-  state.recentlyAssignedLocs: new Map(), state.DQ_MINUTES: 5.5,
-  state.streamQueues: {}, state._expandedAddQueues: new Set(), state.streamEmptySince: {},
-  state._hubSlotIds: [], state.activeTimers: []
-};
-export const state = {
-  state.players: [], state.tagMap: new Map(), state.matchLog: [], state.pollTimer: null,
-  state.announcedSetIds: new Set(), state.completedSetIds: new Set(), state.pollLogEntries: [],
-  state.streamAnnouncedSetIds: new Set(), state.queuePingedSetIds: new Set(),
-  state.activeSetsData: [], state.pendingSetsData: [], state.allFetchedSets: [],
-  state.stationList: [], state.streamList: [], state.hubCheckins: new Set(),
-  state.recentlyAssignedLocs: new Map(), state.DQ_MINUTES: 5.5,
-  state.streamQueues: {}, state._expandedAddQueues: new Set(), state.streamEmptySince: {},
-  state._hubSlotIds: [], state.activeTimers: []
+  players: [], tagMap: new Map(), matchLog: [], pollTimer: null,
+  announcedSetIds: new Set(), completedSetIds: new Set(), pollLogEntries: [],
+  streamAnnouncedSetIds: new Set(), queuePingedSetIds: new Set(),
+  activeSetsData: [], pendingSetsData: [], allFetchedSets: [],
+  stationList: [], streamList: [], hubCheckins: new Set(),
+  recentlyAssignedLocs: new Map(), DQ_MINUTES: 5.5,
+  streamQueues: {}, _expandedAddQueues: new Set(), streamEmptySince: {},
+  _hubSlotIds: [], activeTimers: []
 };
 // ─────────────────────────────────────────────────────────────
 // State
@@ -69,9 +59,6 @@ loadStreamQueues();
 import { resolvePlayer } from './api.js';
 export let discordOverrides = {};
 export function saveOverrides() { localStorage.setItem('abbey_discord_overrides', JSON.stringify(discordOverrides)); }
-import { resolvePlayer } from './api.js';
-export let discordOverrides = {};
-export function saveOverrides() { localStorage.setItem('abbey_discord_overrides', JSON.stringify(discordOverrides)); }
 export const $ = id => document.getElementById(id);
 
 
@@ -89,7 +76,7 @@ function getEventField() {
 }
 
 function getLowestIncompletePhase() {
-  return Math.min(999, ...state.state.allFetchedSets.filter(s => [1, 2, 6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
+  return Math.min(999, ...state.allFetchedSets.filter(s => [1, 2, 6].includes(s.state)).map(s => s.phaseGroup?.phase?.phaseOrder ?? 999));
 }
 
 function getDiscordMention(playerName) {

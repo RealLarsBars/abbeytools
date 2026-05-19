@@ -1,20 +1,98 @@
-import { renderLog } from './hub.js';
-import { loadSettings } from './ui.js';
+import { 
+  renderLog, 
+  resetMatch, 
+  openScoreOverlay, 
+  setScore, 
+  closeScoreOverlay, 
+  submitOverlayScore, 
+  manualLinkPlayer, 
+  unlinkPlayer 
+} from './hub.js';
+import { 
+  loadSettings, 
+  toggleSetup, 
+  hubToggleWatch, 
+  clearPhaseFilter, 
+  saveSettings, 
+  switchTab 
+} from './ui.js';
+import { 
+  fetchManualSets, 
+  renderManualSets, 
+  callSetFromPanel, 
+  toggleHubCheckin 
+} from './manual.js';
+import { 
+  browseEvents, 
+  loadPhaseGroups 
+} from './api.js';
+import { 
+  markInProgressQuick, 
+  closeConfirmModal, 
+  requestDQ, 
+  requestHubDQ, 
+  pullFromStream, 
+  copyPollLog 
+} from './actions.js';
+import { 
+  fetchAndPopulateStreams, 
+  savePriorityStream 
+} from './streams.js';
+import { 
+  startPolling, 
+  stopPolling 
+} from './poll.js';
+import { 
+  addToStreamQueue, 
+  removeFromStreamQueue, 
+  clearAllQueues, 
+  moveInStreamQueue, 
+  promoteFromQueue, 
+  toggleAddQueuePanel 
+} from './queue.js';
+import { 
+  loadCSV 
+} from './csv-handler.js';
 import { state } from './state.js';
 
-import './state.js';
-import './ui.js';
-import './api.js';
-import './discord.js';
-import './actions.js';
-import './streams.js';
-import './poll.js';
-import './manual.js';
-import './queue.js';
-import './hub.js';
-import './csv-handler.js';
-
-// (initDropZone moved to csv-handler.js)
+// Expose functions globally to support inline HTML event handlers in a bundler environment
+Object.assign(window, {
+  toggleSetup,
+  loadCSV,
+  saveSettings,
+  browseEvents,
+  fetchManualSets,
+  fetchAndPopulateStreams,
+  savePriorityStream,
+  loadPhaseGroups,
+  clearPhaseFilter,
+  copyPollLog,
+  switchTab,
+  renderManualSets,
+  startPolling,
+  stopPolling,
+  clearAllQueues,
+  hubToggleWatch,
+  setScore,
+  submitOverlayScore,
+  closeScoreOverlay,
+  closeConfirmModal,
+  toggleHubCheckin,
+  requestDQ,
+  callSetFromPanel,
+  requestHubDQ,
+  markInProgressQuick,
+  openScoreOverlay,
+  unlinkPlayer,
+  manualLinkPlayer,
+  addToStreamQueue,
+  moveInStreamQueue,
+  removeFromStreamQueue,
+  promoteFromQueue,
+  toggleAddQueuePanel,
+  pullFromStream,
+  resetMatch
+});
 
 try { loadSettings(); } catch (e) { console.error('loadSettings failed:', e); }
 // Restore discord IDs from localStorage so page refresh doesn't wipe pings
@@ -29,4 +107,4 @@ try {
     }
   }
 } catch (e) { }
-try { renderLog(); } catch (e) { console.error('renderLog failed:', e); }
+try { renderLog(); } catch (e) { console.error('renderLog failed:', e); }
